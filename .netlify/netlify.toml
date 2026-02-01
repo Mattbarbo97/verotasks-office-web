@@ -1,0 +1,42 @@
+functionsDirectory = "C:\\Users\\Mateus\\verotask\\verotasks-office-web\\netlify\\functions"
+functionsDirectoryOrigin = "default"
+plugins = []
+headers = []
+
+[build]
+publish = "C:\\Users\\Mateus\\verotask\\verotasks-office-web\\dist"
+publishOrigin = "ui"
+commandOrigin = "ui"
+base = "C:\\Users\\Mateus\\verotask\\verotasks-office-web"
+command = "npm run build"
+functions = "C:\\Users\\Mateus\\verotask\\verotasks-office-web\\netlify\\functions"
+
+[build.environment]
+
+[build.processing]
+
+[build.processing.css]
+
+[build.processing.html]
+
+[build.processing.images]
+
+[build.processing.js]
+
+[build.services]
+
+[functions]
+
+[functions."*"]
+
+[[redirects]]
+from = "/*"
+to = "/index.html"
+status = 200.0
+force = false
+
+[redirects.query]
+
+[redirects.conditions]
+
+[redirects.headers]
