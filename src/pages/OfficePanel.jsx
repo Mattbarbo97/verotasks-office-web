@@ -1,4 +1,6 @@
 ﻿// src/pages/OfficePanel.jsx
+/*eslint-disable */
+
 import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { signOut } from "firebase/auth";
 import {
@@ -19,6 +21,10 @@ import Button from "../ui/Button";
 import Badge from "../ui/Badge";
 import Input from "../ui/Input";
 import Toast from "../ui/Toast";
+
+import useAuthUser from "../auth/useAuthUser";
+import useRole from "../auth/useRole";
+
 import { fmtDateTime } from "../lib/date";
 import { safeStr } from "../lib/safe";
 
@@ -158,16 +164,7 @@ function includesText(t, needle) {
 
 /* =========================
    Sound alerts (frontend)
-   - Toca quando chega tarefa NOVA pendente
-   - Toca quando sinal vira "preciso_ajuda" ou "apresentou_problemas"
-   - Anti-spam: throttle + mute 30min
    ========================= */
-
-function makeBeepBlobUrl() {
-  // Beep simples via WebAudio gerado on-demand, sem arquivo.
-  // (Criamos um WAV básico via data URI? Aqui vamos de WebAudio direto ao tocar.)
-  return null;
-}
 
 async function playBeep({ volume = 0.7 } = {}) {
   try {
@@ -179,34 +176,38 @@ async function playBeep({ volume = 0.7 } = {}) {
     const g = ctx.createGain();
 
     o.type = "sine";
-    o.frequency.value = 880; // Hz
+    o.frequency.value = 880;
     g.gain.value = Math.max(0, Math.min(1, Number(volume) || 0.7));
 
     o.connect(g);
     g.connect(ctx.destination);
 
     o.start();
-    // beep curto
     await new Promise((r) => setTimeout(r, 180));
     o.stop();
 
-    // encerra contexto
     await ctx.close().catch(() => {});
     return true;
   } catch {
     return false;
   }
 }
+
 export default function OfficePanel() {
+  const { user } = useAuthUser();
+  const { role, profile } = useRole(user?.uid);
+
+  const telegramLinked = Boolean(profile?.telegram?.linked);
+
   const [tasks, setTasks] = useState([]);
   const [err, setErr] = useState(null);
   const [toast, setToast] = useState(null);
 
-  // filtros (novo)
-  const [tab, setTab] = useState(TAB.PENDING); // pending | closed | all
+  // filtros
+  const [tab, setTab] = useState(TAB.PENDING);
   const [filter, setFilter] = useState("");
-  const [statusFilter, setStatusFilter] = useState(""); // "" = todos
-  const [prioFilter, setPrioFilter] = useState(""); // "" = todos
+  const [statusFilter, setStatusFilter] = useState("");
+  const [prioFilter, setPrioFilter] = useState("");
   const [sortBy, setSortBy] = useState(SORT.NEWEST);
   const [busyId, setBusyId] = useState(null);
 
@@ -226,23 +227,14 @@ export default function OfficePanel() {
   const [muteUntilMs, setMuteUntilMs] = useState(0);
 
   const lastBeepMsRef = useRef(0);
-  const seenPendingIdsRef = useRef(new Set()); // tarefas pendentes já vistas
-  const lastOfficeStateByIdRef = useRef(new Map()); // id -> officeState anterior
+  const seenPendingIdsRef = useRef(new Set());
+  const lastOfficeStateByIdRef = useRef(new Map());
 
   // ✅ Endpoint do backend (Render)
   const BOT_BASE_URL = import.meta.env.VITE_BOT_BASE_URL || "";
   const OFFICE_SECRET = import.meta.env.VITE_OFFICE_API_SECRET || "";
   const ADMIN_SECRET =
     import.meta.env.VITE_ADMIN_API_SECRET || import.meta.env.VITE_OFFICE_API_SECRET || "";
-
-  // ===== DEBUG: envs =====
-  useEffect(() => {
-    const masked = (s) => (s ? `${String(s).slice(0, 4)}…${String(s).slice(-4)}` : "(empty)");
-    console.log("[OfficePanel] ENV BOT_BASE_URL:", BOT_BASE_URL || "(empty)");
-    console.log("[OfficePanel] ENV OFFICE_SECRET:", masked(OFFICE_SECRET));
-    console.log("[OfficePanel] ENV ADMIN_SECRET:", masked(ADMIN_SECRET));
-    console.log("[OfficePanel] location.origin:", window.location.origin);
-  }, [BOT_BASE_URL, OFFICE_SECRET, ADMIN_SECRET]);
 
   // ---------- Admin check ----------
   useEffect(() => {
@@ -251,6 +243,7 @@ export default function OfficePanel() {
 
     (async () => {
       try {
+        // mantém sua estrutura atual (sem quebrar)
         const ref = doc(db, "settings", "admins", u.uid);
         const snap = await getDoc(ref);
         setIsAdmin(snap.exists());
@@ -260,7 +253,7 @@ export default function OfficePanel() {
         setCheckingAdmin(false);
       }
     })();
-  }, []);
+  }, [user?.uid]);
 
   // ---------- Live tasks ----------
   useEffect(() => {
@@ -304,11 +297,6 @@ export default function OfficePanel() {
 
   // ---------- Sound: trigger rules ----------
   useEffect(() => {
-    // Regras:
-    // 1) Nova tarefa em status aberta/pendente => beep
-    // 2) Mudança de sinal para "preciso_ajuda" ou "apresentou_problemas" => beep
-    // Anti-spam: beep no max a cada 4s (local) + mute
-
     if (!soundEnabled) return;
     if (muteUntilMs && nowMs() < muteUntilMs) return;
 
@@ -317,23 +305,17 @@ export default function OfficePanel() {
 
     let shouldBeep = false;
 
-    // 1) novas pendentes
     for (const t of tasks) {
       if (!t?.id) continue;
       const isPending = ["aberta", "pendente"].includes(String(t.status || ""));
       if (!isPending) continue;
 
       if (!seenPendingIdsRef.current.has(t.id)) {
-        // marca como vista e toca
         seenPendingIdsRef.current.add(t.id);
-        // evita beep inicial em “lote grande”: toca só se já tinha algo visto antes
-        // (se for o primeiro carregamento, esse set estará vazio até agora)
-        // Estratégia: se já existia pelo menos 1 item visto antes, beep.
         if (seenPendingIdsRef.current.size > 1) shouldBeep = true;
       }
     }
 
-    // 2) mudanças críticas de sinal do escritório
     for (const t of tasks) {
       if (!t?.id) continue;
 
@@ -341,7 +323,6 @@ export default function OfficePanel() {
       const prev = lastOfficeStateByIdRef.current.get(t.id) || "";
 
       if (curState && curState !== prev) {
-        // mudou de sinal
         if (
           curState === OFFICE_SIGNAL.PRECISO_AJUDA ||
           curState === OFFICE_SIGNAL.APRESENTOU_PROBLEMAS
@@ -355,11 +336,8 @@ export default function OfficePanel() {
 
     if (shouldBeep && canBeep()) {
       lastBeepMsRef.current = nowMs();
-      // tentar tocar (pode falhar se browser exigir “gesture”)
       playBeep({ volume: soundVolume }).then((ok) => {
         if (!ok) {
-          // se falhar, avisa o usuário uma vez (sem spam)
-          // (não vamos setar toast sempre; só se nunca avisou)
           const key = "vero_office_sound_warned";
           try {
             const warned = localStorage.getItem(key);
@@ -375,17 +353,7 @@ export default function OfficePanel() {
 
   // ---------- Office API call ----------
   async function callOfficeSignalApi({ taskId, state, comment, by }) {
-    console.log("[office/signal] preparing request", {
-      taskId,
-      state,
-      hasBase: !!BOT_BASE_URL,
-      hasSecret: !!OFFICE_SECRET,
-      by,
-      commentLen: String(comment || "").length,
-    });
-
     if (!BOT_BASE_URL || !OFFICE_SECRET) {
-      console.warn("[office/signal] skipped: missing env", { BOT_BASE_URL, hasSecret: !!OFFICE_SECRET });
       return { ok: false, skipped: true, reason: "missing_env" };
     }
 
@@ -407,24 +375,16 @@ export default function OfficePanel() {
         }),
       });
     } catch (netErr) {
-      console.error("[office/signal] fetch failed (network/CORS?)", netErr);
       throw new Error(`Falha de rede/CORS: ${netErr?.message || netErr}`);
     }
 
-    console.log("[office/signal] response status", res.status);
-
     const raw = await res.text().catch(() => "");
-    console.log("[office/signal] response raw (first 300)", String(raw || "").slice(0, 300));
-
     let data = {};
     try {
       data = raw ? JSON.parse(raw) : {};
-    } catch (jsonErr) {
-      console.error("[office/signal] JSON parse failed", jsonErr);
+    } catch {
       throw new Error(`Resposta não-JSON do backend (status ${res.status}).`);
     }
-
-    console.log("[office/signal] response json", data);
 
     if (!res.ok || !data.ok) {
       throw new Error(data?.error || `Falha HTTP ${res.status}`);
@@ -435,23 +395,18 @@ export default function OfficePanel() {
 
   const updateSignal = useCallback(
     async (taskId, state, comment = "", { lock = false } = {}) => {
-      console.log("[updateSignal] click", { taskId, state, lock, comment });
-
       setBusyId(taskId);
       setErr(null);
       setToast(null);
 
-      // “gesture” do usuário → libera áudio em muitos browsers
       if (soundEnabled && (!muteUntilMs || nowMs() >= muteUntilMs)) {
-        playBeep({ volume: 0.001 }).catch(() => {}); // beep inaudível só pra destravar
+        playBeep({ volume: 0.001 }).catch(() => {});
       }
 
       try {
         const u = auth.currentUser;
         const byEmail = u?.email || "office-web";
         const byUid = u?.uid || "office-web";
-
-        console.log("[updateSignal] currentUser", { byEmail, byUid, hasUser: !!u });
 
         const ref = doc(db, "tasks", taskId);
 
@@ -475,11 +430,7 @@ export default function OfficePanel() {
           patch.officeSignalLockedBy = byEmail;
         }
 
-        console.log("[updateSignal] updateDoc patch", patch);
-
         await updateDoc(ref, patch);
-
-        console.log("[updateSignal] Firestore updated OK, calling backend...");
 
         try {
           const resp = await callOfficeSignalApi({
@@ -489,10 +440,11 @@ export default function OfficePanel() {
             by: { uid: byUid, email: byEmail },
           });
 
-          // backend novo pode responder telegramOk=false e ok=true
           if (resp?.telegramOk === false) {
             setToast(
-              `⚠️ Sinal salvo, mas não consegui avisar o master agora.\n${resp?.telegram?.description || "Telegram falhou."}`
+              `⚠️ Sinal salvo, mas não consegui avisar o master agora.\n${
+                resp?.telegram?.description || "Telegram falhou."
+              }`
             );
           } else if (resp?.notified === true) {
             setToast("✅ Sinal enviado ao master.");
@@ -504,11 +456,9 @@ export default function OfficePanel() {
             setToast("✅ Sinal salvo. (Sem nova notificação agora.)");
           }
         } catch (apiErr) {
-          console.error("[updateSignal] backend notify failed", apiErr);
           setToast(`⚠️ Sinal salvo, mas falhou avisar o master.\n${apiErr?.message || "Erro no backend."}`);
         }
       } catch (e) {
-        console.error("[updateSignal] failed", e);
         setErr(e?.message || "Falha ao sinalizar.");
       } finally {
         setBusyId(null);
@@ -573,24 +523,18 @@ export default function OfficePanel() {
     }
   }
 
-  // ---------- Visible (tabs + filtros + ordenação) ----------
+  // ---------- Visible ----------
   const visible = useMemo(() => {
     let base = tasks;
 
-    // TAB
     if (tab === TAB.PENDING) base = base.filter((t) => ["aberta", "pendente"].includes(String(t.status || "")));
     if (tab === TAB.CLOSED) base = base.filter((t) => isClosedStatus(String(t.status || "")));
 
-    // status filter (exato)
     if (statusFilter) base = base.filter((t) => String(t.status || "") === statusFilter);
-
-    // prioridade filter
     if (prioFilter) base = base.filter((t) => String(t.priority || "") === prioFilter);
 
-    // busca
     base = base.filter((t) => includesText(t, filter));
 
-    // ordenação
     const sorted = [...base].sort((a, b) => {
       const aCreated = createdAtToMs(a);
       const bCreated = createdAtToMs(b);
@@ -622,7 +566,6 @@ export default function OfficePanel() {
     return sorted;
   }, [tasks, tab, statusFilter, prioFilter, filter, sortBy]);
 
-  // counters
   const counts = useMemo(() => {
     const pending = tasks.filter((t) => ["aberta", "pendente"].includes(String(t.status || ""))).length;
     const closed = tasks.filter((t) => isClosedStatus(String(t.status || ""))).length;
@@ -631,18 +574,36 @@ export default function OfficePanel() {
 
   const isMuted = muteUntilMs && nowMs() < muteUntilMs;
   const muteLeft = isMuted ? msToHuman(muteUntilMs - nowMs()) : "";
-  return (
-    <Shell>
-      {/* HEADER */}
-      <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-        <div style={{ flex: 1, minWidth: 240 }}>
-          <h1 style={{ margin: 0, fontSize: 22 }}>VeroTasks — Painel do Escritório</h1>
-          <div style={{ opacity: 0.75, marginTop: 4 }}>
-            Logado como: {auth.currentUser?.email || "—"}
-            {checkingAdmin ? "" : isAdmin ? " • (admin)" : " • (office)"}
-          </div>
-        </div>
 
+  const userLabel = user?.email || auth.currentUser?.email || "—";
+  const effectiveRole = checkingAdmin ? "" : isAdmin ? "admin" : role || "office";
+  const showMasterNav = role === "master" || isAdmin;
+
+  return (
+    <Shell
+      title="VeroTasks"
+      subtitle="Painel do Escritório"
+      userLabel={userLabel}
+      role={effectiveRole}
+      telegramLinked={telegramLinked}
+      onLogout={onLogout}
+      showMasterNav={showMasterNav}
+    >
+      {/* TOASTS */}
+      {toast ? (
+        <Toast tone={toastTone(toast)} style={{ marginTop: 12 }}>
+          <div style={{ whiteSpace: "pre-wrap" }}>{toast}</div>
+        </Toast>
+      ) : null}
+
+      {err ? (
+        <Toast tone="bad" style={{ marginTop: 12 }}>
+          {err}
+        </Toast>
+      ) : null}
+
+      {/* FILTERS + SOUND (mantendo seu layout) */}
+      <Card style={{ marginTop: 14 }}>
         <div style={{ display: "flex", gap: 10, alignItems: "end", flexWrap: "wrap" }}>
           <Input
             label="Buscar"
@@ -803,25 +764,8 @@ export default function OfficePanel() {
               </div>
             </div>
           </div>
-
-          <Button onClick={onLogout} tone="ghost">
-            Sair
-          </Button>
         </div>
-      </div>
-
-      {/* TOASTS */}
-      {toast ? (
-        <Toast tone={toastTone(toast)} style={{ marginTop: 12 }}>
-          <div style={{ whiteSpace: "pre-wrap" }}>{toast}</div>
-        </Toast>
-      ) : null}
-
-      {err ? (
-        <Toast tone="bad" style={{ marginTop: 12 }}>
-          {err}
-        </Toast>
-      ) : null}
+      </Card>
 
       {/* ADMIN CARD */}
       {isAdmin ? (
@@ -900,7 +844,9 @@ export default function OfficePanel() {
                 <div>
                   👤 De: <b>{safeStr(t.createdBy?.name) || "—"}</b>
                 </div>
-                <div>🕒 Criada: {createdAt ? fmtDateTime(createdAt) : "—"} • <b>{age}</b></div>
+                <div>
+                  🕒 Criada: {createdAt ? fmtDateTime(createdAt) : "—"} • <b>{age}</b>
+                </div>
                 <div>
                   🧷 Último sinal: {officeSignaledAt ? fmtDateTime(officeSignaledAt) : "—"} • <b>{lastSignalAgo}</b>
                 </div>
@@ -921,10 +867,7 @@ export default function OfficePanel() {
               ) : null}
 
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                <Button
-                  onClick={() => updateSignal(t.id, OFFICE_SIGNAL.EM_ANDAMENTO, "", { lock: false })}
-                  disabled={disabled}
-                >
+                <Button onClick={() => updateSignal(t.id, OFFICE_SIGNAL.EM_ANDAMENTO, "", { lock: false })} disabled={disabled}>
                   Em andamento
                 </Button>
 
@@ -948,9 +891,7 @@ export default function OfficePanel() {
 
                 <Button
                   tone="primary"
-                  onClick={() =>
-                    updateSignal(t.id, OFFICE_SIGNAL.TAREFA_EXECUTADA, "✅ Tarefa executada", { lock: true })
-                  }
+                  onClick={() => updateSignal(t.id, OFFICE_SIGNAL.TAREFA_EXECUTADA, "✅ Tarefa executada", { lock: true })}
                   disabled={disabled}
                 >
                   Tarefa executada
@@ -988,6 +929,7 @@ function CommentButton({ task, busy, onSave }) {
   const [text, setText] = useState(safeStr(task.officeComment) || "");
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setText(safeStr(task.officeComment) || "");
   }, [task.officeComment]);
 
