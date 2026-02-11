@@ -1,45 +1,53 @@
 ﻿// src/firebase.js
-import { initializeApp } from "firebase/app";
+import { initializeApp, getApps } from "firebase/app";
 import { getAuth } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
 
-function getEnv(name) {
-  const v = import.meta.env[name];
-  return (v && String(v).trim()) || "";
+function env(k) {
+  return (import.meta?.env?.[k] ?? "").toString().trim();
 }
 
 const firebaseConfig = {
-  apiKey: getEnv("VITE_FIREBASE_API_KEY"),
-  authDomain: getEnv("VITE_FIREBASE_AUTH_DOMAIN"),
-  projectId: getEnv("VITE_FIREBASE_PROJECT_ID"),
-  storageBucket: getEnv("VITE_FIREBASE_STORAGE_BUCKET"),
-  messagingSenderId: getEnv("VITE_FIREBASE_MESSAGING_SENDER_ID"),
-  appId: getEnv("VITE_FIREBASE_APP_ID"),
+  apiKey: env("VITE_FIREBASE_API_KEY"),
+  authDomain: env("VITE_FIREBASE_AUTH_DOMAIN"),
+  projectId: env("VITE_FIREBASE_PROJECT_ID"),
+  storageBucket: env("VITE_FIREBASE_STORAGE_BUCKET"),
+  messagingSenderId: env("VITE_FIREBASE_MESSAGING_SENDER_ID"),
+  appId: env("VITE_FIREBASE_APP_ID"),
 };
 
-export const missingKeys = Object.entries(firebaseConfig)
-  .filter(([, v]) => !v)
-  .map(([k]) => k);
+const REQUIRED = [
+  "apiKey",
+  "authDomain",
+  "projectId",
+  "storageBucket",
+  "messagingSenderId",
+  "appId",
+];
 
-export const firebaseError =
-  missingKeys.length > 0
-    ? `Firebase não configurado. Faltando: ${missingKeys.join(", ")}`
-    : "";
+const missing = REQUIRED.filter((k) => !firebaseConfig[k]);
 
 let app = null;
 let auth = null;
 let db = null;
 
-try {
-  if (!firebaseError) {
-    app = initializeApp(firebaseConfig);
+if (missing.length) {
+  // Não quebra o app inteiro. Só loga e deixa auth/db nulos.
+  // Assim você consegue renderizar uma tela de "Config faltando".
+  // eslint-disable-next-line no-console
+  console.error("[Firebase] Config incompleta:", missing);
+} else {
+  try {
+    app = getApps().length ? getApps()[0] : initializeApp(firebaseConfig);
     auth = getAuth(app);
     db = getFirestore(app);
-  } else {
-    console.warn("[Firebase] Config incompleta:", missingKeys);
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.error("[Firebase] Falha ao inicializar:", e?.message || e);
+    app = null;
+    auth = null;
+    db = null;
   }
-} catch (e) {
-  console.error("[Firebase] Erro ao inicializar:", e);
 }
 
-export { auth, db };
+export { app, auth, db, firebaseConfig, missing };
