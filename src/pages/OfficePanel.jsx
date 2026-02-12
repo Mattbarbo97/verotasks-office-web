@@ -12,6 +12,7 @@ import {
   doc,
   serverTimestamp,
   getDoc,
+  setDoc,
 } from "firebase/firestore";
 
 import { auth, db } from "../firebase";
@@ -90,6 +91,27 @@ function toastTone(msg) {
 }
 
 /* =========================
+   Task Preview (FIX)
+   ========================= */
+
+function taskPreview(t) {
+  // Telegram -> Firestore padrão (seu doc tem message/description/title/telegram.rawText)
+  const msg =
+    safeStr(t?.message) ||
+    safeStr(t?.description) ||
+    safeStr(t?.title) ||
+    safeStr(t?.telegram?.rawText) ||
+    safeStr(t?.telegram?.text) || // compat
+    "";
+
+  // Se você tiver "source" como objeto em tasks antigas
+  const legacySourceText =
+    t?.source && typeof t.source === "object" ? safeStr(t.source.text) : "";
+
+  return msg || legacySourceText || "(sem mensagem)";
+}
+
+/* =========================
    Office signal (canon)
    ========================= */
 
@@ -119,6 +141,16 @@ function signalLabel(sig) {
 }
 
 /* =========================
+   Membership Gate (NEW)
+   ========================= */
+
+function normalizeMembership(mem) {
+  const role = String(mem?.role || "").trim();
+  const isActive = mem?.isActive === true;
+  return { role, isActive };
+}
+
+/* =========================
    Filters / sorting
    ========================= */
 
@@ -143,7 +175,9 @@ function includesText(t, needle) {
   if (!f) return true;
 
   const from = safeStr(t.createdBy?.name).toLowerCase();
-  const msg = safeStr(t.source?.text).toLowerCase();
+
+  // ✅ FIX: buscar no preview real (message/description/title/telegram.rawText)
+  const msg = taskPreview(t).toLowerCase();
 
   const legacyOfficeComment = safeStr(t.officeComment).toLowerCase();
   const masterComment = safeStr(t.masterComment).toLowerCase();
@@ -203,6 +237,11 @@ export default function OfficePanel() {
   const [err, setErr] = useState(null);
   const [toast, setToast] = useState(null);
 
+  // ✅ Membership gate
+  const [membership, setMembership] = useState(null);
+  const [membershipLoading, setMembershipLoading] = useState(true);
+  const [membershipErr, setMembershipErr] = useState(null);
+
   // filtros
   const [tab, setTab] = useState(TAB.PENDING);
   const [filter, setFilter] = useState("");
@@ -219,6 +258,7 @@ export default function OfficePanel() {
   const [newEmail, setNewEmail] = useState("");
   const [newPass, setNewPass] = useState("");
   const [newName, setNewName] = useState("");
+  const [newMemberRole, setNewMemberRole] = useState("office_user"); // ✅ NEW
   const [apiBusy, setApiBusy] = useState(false);
 
   // 🔊 Som
@@ -236,14 +276,63 @@ export default function OfficePanel() {
   const ADMIN_SECRET =
     import.meta.env.VITE_ADMIN_API_SECRET || import.meta.env.VITE_OFFICE_API_SECRET || "";
 
-  // ---------- Admin check ----------
+  // ---------- Membership fetch ----------
   useEffect(() => {
     const u = auth.currentUser;
-    if (!u) return;
+    if (!u) {
+      setMembership(null);
+      setMembershipLoading(false);
+      setMembershipErr(null);
+      return;
+    }
+
+    (async () => {
+      setMembershipLoading(true);
+      setMembershipErr(null);
+      try {
+        const snap = await getDoc(doc(db, "memberships", u.uid));
+        if (!snap.exists()) {
+          setMembership(null);
+        } else {
+          setMembership({ id: snap.id, ...snap.data() });
+        }
+      } catch (e) {
+        setMembershipErr(e?.message || "Falha ao verificar acesso.");
+        setMembership(null);
+      } finally {
+        setMembershipLoading(false);
+      }
+    })();
+  }, [user?.uid]);
+
+  const memNorm = useMemo(() => normalizeMembership(membership), [membership]);
+  const accessAllowed = useMemo(() => {
+    // ✅ política: precisa existir membership e isActive=true
+    // roles válidas no Office:
+    const okRole = ["office_admin", "office_user"].includes(memNorm.role);
+    return memNorm.isActive && okRole;
+  }, [memNorm.role, memNorm.isActive]);
+
+  const isOfficeAdminByMembership = memNorm.isActive && memNorm.role === "office_admin";
+
+  // ---------- Admin check (legacy + membership) ----------
+  useEffect(() => {
+    const u = auth.currentUser;
+    if (!u) {
+      setIsAdmin(false);
+      setCheckingAdmin(false);
+      return;
+    }
 
     (async () => {
       try {
-        // mantém sua estrutura atual (sem quebrar)
+        // ✅ primeiro: membership manda
+        if (isOfficeAdminByMembership) {
+          setIsAdmin(true);
+          return;
+        }
+
+        // ✅ fallback: mantém sua estrutura atual (settings/admins)
         const ref = doc(db, "settings", "admins", u.uid);
         const snap = await getDoc(ref);
         setIsAdmin(snap.exists());
@@ -253,10 +342,12 @@ export default function OfficePanel() {
         setCheckingAdmin(false);
       }
     })();
-  }, [user?.uid]);
+  }, [user?.uid, isOfficeAdminByMembership]);
 
-  // ---------- Live tasks ----------
+  // ---------- Live tasks (só se tiver acesso) ----------
   useEffect(() => {
+    if (!accessAllowed) return;
+
     const qy = query(collection(db, "tasks"), orderBy("createdAt", "desc"));
     const unsub = onSnapshot(
       qy,
@@ -270,7 +361,7 @@ export default function OfficePanel() {
     );
 
     return () => unsub();
-  }, []);
+  }, [accessAllowed]);
 
   // ---------- Sound: load saved prefs ----------
   useEffect(() => {
@@ -297,6 +388,7 @@ export default function OfficePanel() {
 
   // ---------- Sound: trigger rules ----------
   useEffect(() => {
+    if (!accessAllowed) return;
     if (!soundEnabled) return;
     if (muteUntilMs && nowMs() < muteUntilMs) return;
 
@@ -349,7 +441,7 @@ export default function OfficePanel() {
         }
       });
     }
-  }, [tasks, soundEnabled, soundVolume, muteUntilMs]);
+  }, [tasks, soundEnabled, soundVolume, muteUntilMs, accessAllowed]);
 
   // ---------- Office API call ----------
   async function callOfficeSignalApi({ taskId, state, comment, by }) {
@@ -504,18 +596,42 @@ export default function OfficePanel() {
           email: newEmail.trim(),
           password: newPass,
           name: newName || newEmail.trim().split("@")[0],
-          role: "office",
+          role: "office", // mantém compat
           active: true,
+          membershipRole: newMemberRole, // opcional (se backend quiser usar)
         }),
       });
 
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) throw new Error(data?.error || `Falha HTTP ${res.status}`);
 
+      // ✅ grava membership (libera acesso imediatamente)
+      try {
+        const createdUid = data.uid;
+        if (createdUid) {
+          const byUid = auth.currentUser?.uid || "";
+          await setDoc(
+            doc(db, "memberships", createdUid),
+            {
+              role: newMemberRole,
+              isActive: true,
+              createdAt: serverTimestamp(),
+              createdByUid: byUid || null,
+              updatedAt: serverTimestamp(),
+            },
+            { merge: true }
+          );
+        }
+      } catch (e) {
+        // não quebra o fluxo, mas avisa
+        setToast(`⚠️ Usuário criado, mas falhou liberar acesso (memberships).\n${e?.message || "Erro Firestore."}`);
+      }
+
       setToast(`✅ Usuário criado: ${data.email} (${data.uid})`);
       setNewEmail("");
       setNewPass("");
       setNewName("");
+      setNewMemberRole("office_user");
     } catch (e) {
       setToast(e?.message || "Falha ao criar usuário.");
     } finally {
@@ -576,8 +692,64 @@ export default function OfficePanel() {
   const muteLeft = isMuted ? msToHuman(muteUntilMs - nowMs()) : "";
 
   const userLabel = user?.email || auth.currentUser?.email || "—";
-  const effectiveRole = checkingAdmin ? "" : isAdmin ? "admin" : role || "office";
+  const effectiveRole = checkingAdmin ? "" : isAdmin ? "admin" : memNorm.role || role || "office";
   const showMasterNav = role === "master" || isAdmin;
+
+  // ---------- Gate UI ----------
+  if (membershipLoading) {
+    return (
+      <Shell
+        title="VeroTasks"
+        subtitle="Painel do Escritório"
+        userLabel={userLabel}
+        role={effectiveRole}
+        telegramLinked={telegramLinked}
+        onLogout={onLogout}
+        showMasterNav={showMasterNav}
+      >
+        <Card style={{ marginTop: 14 }}>
+          <div style={{ fontWeight: 900, marginBottom: 6 }}>Verificando acesso…</div>
+          <div style={{ opacity: 0.8 }}>Aguarde um instante.</div>
+        </Card>
+      </Shell>
+    );
+  }
+
+  if (!accessAllowed) {
+    return (
+      <Shell
+        title="VeroTasks"
+        subtitle="Painel do Escritório"
+        userLabel={userLabel}
+        role={effectiveRole}
+        telegramLinked={telegramLinked}
+        onLogout={onLogout}
+        showMasterNav={showMasterNav}
+      >
+        <Card style={{ marginTop: 14 }}>
+          <div style={{ fontWeight: 900, marginBottom: 6 }}>🚫 Sem acesso liberado</div>
+
+          {membershipErr ? (
+            <Toast tone="bad" style={{ marginTop: 10 }}>
+              {membershipErr}
+            </Toast>
+          ) : (
+            <div style={{ opacity: 0.85, lineHeight: 1.4 }}>
+              Seu usuário está autenticado, mas não tem permissão no <code>memberships/{auth.currentUser?.uid}</code>.
+              <br />
+              Peça para um <b>office_admin</b> liberar seu acesso.
+            </div>
+          )}
+
+          <div style={{ marginTop: 12, display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <Button onClick={onLogout} tone="ghost">
+              Sair
+            </Button>
+          </div>
+        </Card>
+      </Shell>
+    );
+  }
 
   return (
     <Shell
@@ -772,7 +944,7 @@ export default function OfficePanel() {
         <Card style={{ marginTop: 14 }}>
           <div style={{ fontWeight: 900, marginBottom: 10 }}>Admin — Criar usuário do escritório</div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto", gap: 10 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 220px auto", gap: 10 }}>
             <Input label="Nome" value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Priscila" />
             <Input
               label="Email"
@@ -788,6 +960,27 @@ export default function OfficePanel() {
               onChange={(e) => setNewPass(e.target.value)}
               placeholder="mín. 6"
             />
+
+            <div style={{ display: "grid", gap: 6 }}>
+              <label style={{ fontSize: 12, opacity: 0.75 }}>Papel</label>
+              <select
+                value={newMemberRole}
+                onChange={(e) => setNewMemberRole(e.target.value)}
+                style={{
+                  height: 40,
+                  borderRadius: 12,
+                  border: "1px solid rgba(255,255,255,0.12)",
+                  background: "rgba(0,0,0,0.25)",
+                  color: "#e5e7eb",
+                  padding: "0 10px",
+                  outline: "none",
+                }}
+              >
+                <option value="office_user">office_user</option>
+                <option value="office_admin">office_admin</option>
+              </select>
+            </div>
+
             <div style={{ display: "grid", gap: 6 }}>
               <label style={{ fontSize: 12, opacity: 0.75 }}>Ação</label>
               <Button disabled={apiBusy} onClick={createUserViaBot}>
@@ -797,7 +990,7 @@ export default function OfficePanel() {
           </div>
 
           <div style={{ marginTop: 10, fontSize: 12, opacity: 0.75 }}>
-            *Este fluxo cria o usuário via BOT (Admin SDK) e grava o perfil no Firestore.
+            *Este fluxo cria o usuário via BOT (Admin SDK) e grava o membership para liberar acesso.
           </div>
         </Card>
       ) : null}
@@ -825,11 +1018,13 @@ export default function OfficePanel() {
           const age = createdAt ? msToHuman(nowMs() - createdAt.getTime()) : "—";
           const lastSignalAgo = officeSignaledAt ? msToHuman(nowMs() - officeSignaledAt.getTime()) : "—";
 
+          const preview = taskPreview(t);
+
           return (
             <Card key={t.id} style={{ display: "grid", gap: 10 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
                 <div style={{ fontSize: 16, fontWeight: 900, flex: 1, minWidth: 240 }}>
-                  {safeStr(t.source?.text) || "(sem mensagem)"}
+                  {preview}
                 </div>
 
                 <Badge tone={pr.tone}>⚡ {pr.text}</Badge>

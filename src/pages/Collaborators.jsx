@@ -1,4 +1,7 @@
+// src/pages/Collaborators.jsx
 import React, { useEffect, useMemo, useState } from "react";
+import { collection, onSnapshot, orderBy, query } from "firebase/firestore";
+
 import Shell from "../ui/Shell";
 import Card from "../ui/Card";
 import Input from "../ui/Input";
@@ -6,11 +9,40 @@ import Select from "../ui/Select";
 import Button from "../ui/Button";
 import Toast from "../ui/Toast";
 import Spinner from "../ui/Spinner";
+
 import useAuthUser from "../auth/useAuthUser";
 import useRole from "../auth/useRole";
 import { apiFetch } from "../lib/api";
-import { collection, onSnapshot, orderBy, query } from "firebase/firestore";
 import { db } from "../firebase";
+
+function SectionTitle({ title, subtitle }) {
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <div style={{ fontWeight: 950, fontSize: 14 }}>{title}</div>
+      {subtitle ? <div style={{ fontSize: 12, opacity: 0.72, marginTop: 2 }}>{subtitle}</div> : null}
+    </div>
+  );
+}
+
+function GlassRow({ children }) {
+  return (
+    <div
+      style={{
+        background: "rgba(255,255,255,0.04)",
+        border: "1px solid rgba(255,255,255,0.10)",
+        borderRadius: 16,
+        padding: 12,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 12,
+        flexWrap: "wrap",
+      }}
+    >
+      {children}
+    </div>
+  );
+}
 
 export default function Collaborators() {
   const { user } = useAuthUser();
@@ -30,9 +62,9 @@ export default function Collaborators() {
   const userLabel = useMemo(() => user?.email || "", [user]);
 
   useEffect(() => {
-    const q = query(collection(db, "users"), orderBy("createdAt", "desc"));
+    const qy = query(collection(db, "users"), orderBy("createdAt", "desc"));
     const off = onSnapshot(
-      q,
+      qy,
       (snap) => {
         setUsers(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
         setLoadingUsers(false);
@@ -44,7 +76,12 @@ export default function Collaborators() {
 
   async function onCreate() {
     if (!email.trim() || pass.trim().length < 6) {
-      setToast({ open: true, kind: "error", title: "Dados inválidos", message: "Email e senha (mín. 6) são obrigatórios." });
+      setToast({
+        open: true,
+        kind: "error",
+        title: "Dados inválidos",
+        message: "Email e senha (mín. 6) são obrigatórios.",
+      });
       return;
     }
 
@@ -61,9 +98,17 @@ export default function Collaborators() {
       });
 
       setToast({ open: true, kind: "ok", title: "Colaborador criado", message: "Usuário criado e perfil salvo." });
-      setEmail(""); setPass(""); setDisplayName(""); setNewRole("office");
+      setEmail("");
+      setPass("");
+      setDisplayName("");
+      setNewRole("office");
     } catch (err) {
-      setToast({ open: true, kind: "error", title: "Falha", message: err?.message || "Não foi possível criar usuário." });
+      setToast({
+        open: true,
+        kind: "error",
+        title: "Falha",
+        message: err?.message || "Não foi possível criar usuário.",
+      });
     } finally {
       setCreating(false);
     }
@@ -71,51 +116,74 @@ export default function Collaborators() {
 
   return (
     <Shell title="VeroTasks" subtitle="Colaboradores" userLabel={`${userLabel} • (${role || "—"})`} showMasterNav={true}>
-      <div className="grid gap-4">
-        <Card title="Criar colaborador" subtitle="Master cria logins do escritório. Depois cada um vincula Telegram.">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-3xl">
+      <div style={{ display: "grid", gap: 14 }}>
+        <Card>
+          <SectionTitle
+            title="Criar colaborador"
+            subtitle="Master cria logins do escritório. Depois cada um vincula Telegram."
+          />
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, maxWidth: 860 }}>
             <Input label="Nome (opcional)" value={displayName} onChange={(e) => setDisplayName(e.target.value)} />
-            <Select label="Role" value={newRole} onChange={(e) => setNewRole(e.target.value)}>
-              <option value="office">office</option>
-              <option value="master">master</option>
-            </Select>
+
+            <div style={{ display: "grid", gap: 6 }}>
+              <label style={{ fontSize: 12, opacity: 0.75 }}>Role</label>
+              <Select value={newRole} onChange={(e) => setNewRole(e.target.value)}>
+                <option value="office">office</option>
+                <option value="master">master</option>
+              </Select>
+            </div>
+
             <Input label="Email" value={email} onChange={(e) => setEmail(e.target.value)} />
             <Input label="Senha" type="password" value={pass} onChange={(e) => setPass(e.target.value)} />
           </div>
 
-          <div className="mt-3 flex gap-2">
+          <div style={{ marginTop: 12, display: "flex", gap: 10, flexWrap: "wrap" }}>
             <Button onClick={onCreate} disabled={creating}>
               {creating ? "Criando…" : "Criar usuário"}
             </Button>
-            <Button variant="ghost" onClick={() => { setEmail(""); setPass(""); setDisplayName(""); setNewRole("office"); }}>
+
+            <Button
+              tone="ghost"
+              onClick={() => {
+                setEmail("");
+                setPass("");
+                setDisplayName("");
+                setNewRole("office");
+              }}
+            >
               Limpar
             </Button>
           </div>
 
-          <div className="text-xs text-white/50 mt-2">
+          <div style={{ fontSize: 12, opacity: 0.7, marginTop: 10 }}>
             Regras: office vê tarefas e sinaliza; master decide finalização e prioridade.
           </div>
         </Card>
 
-        <Card title="Lista de usuários" subtitle="Master vê todos. Office vê apenas o próprio (via rules).">
+        <Card>
+          <SectionTitle title="Lista de usuários" subtitle="Master vê todos. Office vê apenas o próprio (via rules)." />
+
           {loadingUsers ? (
             <Spinner />
           ) : (
-            <div className="space-y-2">
+            <div style={{ display: "grid", gap: 10 }}>
               {users.map((u) => (
-                <div key={u.uid || u.id} className="vero-glass rounded-2xl border border-white/10 p-3 flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="text-sm font-semibold truncate">{u.displayName || u.email || u.uid}</div>
-                    <div className="text-xs text-white/60 truncate">
+                <GlassRow key={u.uid || u.id}>
+                  <div style={{ minWidth: 260, flex: 1 }}>
+                    <div style={{ fontSize: 13, fontWeight: 900 }}>{u.displayName || u.email || u.uid}</div>
+                    <div style={{ fontSize: 12, opacity: 0.7, marginTop: 2 }}>
                       {u.email || "—"} • role: {u.role || "—"} • telegram: {u.telegram?.linked ? "✅" : "—"}
                     </div>
                   </div>
-                  <div className="text-xs text-white/50">
+
+                  <div style={{ fontSize: 12, opacity: 0.65 }}>
                     {u.telegram?.username ? `@${u.telegram.username}` : ""}
                   </div>
-                </div>
+                </GlassRow>
               ))}
-              {users.length === 0 ? <div className="text-xs text-white/50">Nenhum usuário encontrado.</div> : null}
+
+              {users.length === 0 ? <div style={{ fontSize: 12, opacity: 0.65 }}>Nenhum usuário encontrado.</div> : null}
             </div>
           )}
         </Card>

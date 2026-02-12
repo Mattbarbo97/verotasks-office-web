@@ -63,6 +63,9 @@ export default function Shell({
 
   const maxW = 1180;
 
+  // ✅ office_admin (membership) OU admin (legacy) pode ver gestão de acessos
+  const canManageAccess = role === "office_admin" || role === "admin";
+
   return (
     <div
       style={{
@@ -141,6 +144,18 @@ export default function Shell({
             >
               🧩 Office
             </Link>
+
+            {/* ✅ Gestão de Acessos (office_admin/admin) */}
+            {canManageAccess ? (
+              <Link
+                to="/office/access"
+                style={pillStyle(routeActive(loc.pathname, "/office/access"))}
+                onMouseDown={(e) => e.currentTarget && (e.currentTarget.style.transform = "scale(0.98)")}
+                onMouseUp={(e) => e.currentTarget && (e.currentTarget.style.transform = "scale(1)")}
+              >
+                🔐 Acessos
+              </Link>
+            ) : null}
 
             <Link
               to="/telegram"
