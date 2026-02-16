@@ -1,9 +1,14 @@
 // src/auth/useAuthUser.js
-/*eslint-disable  */
+/* eslint-disable */
 import { useEffect, useState } from "react";
 import { onAuthStateChanged } from "firebase/auth";
 import { doc, getDoc, serverTimestamp, setDoc } from "firebase/firestore";
 import { auth, db, missing } from "../firebase";
+
+function isPermissionDenied(err) {
+  const code = err?.code || "";
+  return code === "permission-denied" || code === "PERMISSION_DENIED";
+}
 
 export default function useAuthUser() {
   const [user, setUser] = useState(null);
@@ -27,43 +32,61 @@ export default function useAuthUser() {
       return;
     }
 
+    setConfigError("");
+
     const unsub = onAuthStateChanged(
       auth,
       async (u) => {
         setUser(u || null);
 
-        // Se logou, garante que existe users/{uid}
-        try {
-          if (u && db) {
-            const ref = doc(db, "users", u.uid);
-            const snap = await getDoc(ref);
+        // Sem login -> encerra
+        if (!u) {
+          setLoading(false);
+          return;
+        }
 
-            if (!snap.exists()) {
-              await setDoc(
-                ref,
-                {
-                  uid: u.uid,
-                  email: u.email || "",
-                  name: u.displayName || (u.email ? u.email.split("@")[0] : ""),
-                  role: "office", // default
-                  status: "active", // alinhado com o backend (telegramAuth.js usa status/role)
-                  telegramUserId: "",
-                  telegramChatId: "",
-                  telegramLabel: "",
-                  telegramLinkedAt: null,
-                  createdAt: serverTimestamp(),
-                  updatedAt: serverTimestamp(),
-                },
-                { merge: true }
-              );
-            } else {
-              await setDoc(ref, { updatedAt: serverTimestamp() }, { merge: true });
-            }
+        // Se não tiver Firestore, não tenta nada
+        if (!db) {
+          setLoading(false);
+          return;
+        }
+
+        // ✅ Tenta garantir users/{uid}, mas NÃO pode travar login nem quebrar por rules.
+        try {
+          const ref = doc(db, "users", u.uid);
+          const snap = await getDoc(ref);
+
+          // Se não existir, tentamos criar um perfil mínimo.
+          // IMPORTANTE: isso só funciona se suas rules permitirem create/update em users/{uid}.
+          if (!snap.exists()) {
+            await setDoc(
+              ref,
+              {
+                uid: u.uid,
+                email: u.email || "",
+                name: u.displayName || (u.email ? u.email.split("@")[0] : ""),
+
+                // fallback legacy (caso memberships esteja inacessível)
+                role: "office",
+                active: true,
+
+                // metadados úteis
+                createdAt: serverTimestamp(),
+                updatedAt: serverTimestamp(),
+              },
+              { merge: true }
+            );
+          } else {
+            // Só atualiza updatedAt se tiver permissão; se não tiver, ignora.
+            await setDoc(ref, { updatedAt: serverTimestamp() }, { merge: true });
           }
         } catch (e) {
-          // Não trava login; só loga.
-          // eslint-disable-next-line no-console
-          console.warn("[useAuthUser] failed ensuring users/{uid}", e?.message || e);
+          // Se rules bloquearem, não trava o login.
+          if (isPermissionDenied(e)) {
+            console.warn("[useAuthUser] sem permissão para ler/escrever users/{uid} (ok, seguindo).");
+          } else {
+            console.warn("[useAuthUser] failed ensuring users/{uid}", e?.message || e);
+          }
         }
 
         setLoading(false);

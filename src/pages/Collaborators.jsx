@@ -11,7 +11,6 @@ import Toast from "../ui/Toast";
 import Spinner from "../ui/Spinner";
 
 import useAuthUser from "../auth/useAuthUser";
-import useRole from "../auth/useRole";
 import { apiFetch } from "../lib/api";
 import { db } from "../firebase";
 
@@ -46,7 +45,6 @@ function GlassRow({ children }) {
 
 export default function Collaborators() {
   const { user } = useAuthUser();
-  const { role } = useRole(user?.uid);
 
   const [users, setUsers] = useState([]);
   const [loadingUsers, setLoadingUsers] = useState(true);
@@ -115,7 +113,7 @@ export default function Collaborators() {
   }
 
   return (
-    <Shell title="VeroTasks" subtitle="Colaboradores" userLabel={`${userLabel} • (${role || "—"})`} showMasterNav={true}>
+    <Shell title="VeroTasks" subtitle="Colaboradores" userLabel={userLabel} showMasterNav={true}>
       <div style={{ display: "grid", gap: 14 }}>
         <Card>
           <SectionTitle
@@ -157,12 +155,12 @@ export default function Collaborators() {
           </div>
 
           <div style={{ fontSize: 12, opacity: 0.7, marginTop: 10 }}>
-            Regras: office vê tarefas e sinaliza; master decide finalização e prioridade.
+            Regras (conceito): office vê tarefas e sinaliza; master decide finalização e prioridade.
           </div>
         </Card>
 
         <Card>
-          <SectionTitle title="Lista de usuários" subtitle="Master vê todos. Office vê apenas o próprio (via rules)." />
+          <SectionTitle title="Lista de usuários" subtitle="Lista do Firestore (/users)." />
 
           {loadingUsers ? (
             <Spinner />

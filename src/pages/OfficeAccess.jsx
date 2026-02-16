@@ -21,7 +21,6 @@ import Toast from "../ui/Toast";
 import Spinner from "../ui/Spinner";
 
 import useAuthUser from "../auth/useAuthUser";
-import useRole from "../auth/useRole";
 import { apiFetch } from "../lib/api";
 import { db } from "../firebase";
 
@@ -70,7 +69,6 @@ function GlassRow({ children }) {
 
 export default function OfficeAccess() {
   const { user } = useAuthUser();
-  const { role: appRole } = useRole(user?.uid);
 
   const [users, setUsers] = useState([]);
   const [loadingUsers, setLoadingUsers] = useState(true);
@@ -327,9 +325,9 @@ export default function OfficeAccess() {
     <Shell
       title="VeroTasks"
       subtitle="Gestão de Acessos"
-      userLabel={`${userLabel} • (${appRole || "—"})`}
+      userLabel={userLabel}
       showMasterNav={true}
-      role={appRole}
+      role="admin"
     >
       <div style={{ display: "grid", gap: 14 }}>
         <Card>

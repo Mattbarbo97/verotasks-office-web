@@ -1,19 +1,9 @@
 ﻿// src/pages/OfficePanel.jsx
-/*eslint-disable */
+/* eslint-disable */
 
 import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { signOut } from "firebase/auth";
-import {
-  collection,
-  onSnapshot,
-  orderBy,
-  query,
-  updateDoc,
-  doc,
-  serverTimestamp,
-  getDoc,
-  setDoc,
-} from "firebase/firestore";
+import { collection, onSnapshot, orderBy, query, updateDoc, doc, serverTimestamp } from "firebase/firestore";
 
 import { auth, db } from "../firebase";
 import Shell from "../ui/Shell";
@@ -24,8 +14,6 @@ import Input from "../ui/Input";
 import Toast from "../ui/Toast";
 
 import useAuthUser from "../auth/useAuthUser";
-import useRole from "../auth/useRole";
-
 import { fmtDateTime } from "../lib/date";
 import { safeStr } from "../lib/safe";
 
@@ -95,19 +83,15 @@ function toastTone(msg) {
    ========================= */
 
 function taskPreview(t) {
-  // Telegram -> Firestore padrão (seu doc tem message/description/title/telegram.rawText)
   const msg =
     safeStr(t?.message) ||
     safeStr(t?.description) ||
     safeStr(t?.title) ||
     safeStr(t?.telegram?.rawText) ||
-    safeStr(t?.telegram?.text) || // compat
+    safeStr(t?.telegram?.text) ||
     "";
 
-  // Se você tiver "source" como objeto em tasks antigas
-  const legacySourceText =
-    t?.source && typeof t.source === "object" ? safeStr(t.source.text) : "";
-
+  const legacySourceText = t?.source && typeof t.source === "object" ? safeStr(t.source.text) : "";
   return msg || legacySourceText || "(sem mensagem)";
 }
 
@@ -115,7 +99,6 @@ function taskPreview(t) {
    Office signal (canon)
    ========================= */
 
-// ✅ SINAIS CANÔNICOS (bate com o backend)
 const OFFICE_SIGNAL = {
   EM_ANDAMENTO: "em_andamento",
   PRECISO_AJUDA: "preciso_ajuda",
@@ -141,24 +124,10 @@ function signalLabel(sig) {
 }
 
 /* =========================
-   Membership Gate (NEW)
-   ========================= */
-
-function normalizeMembership(mem) {
-  const role = String(mem?.role || "").trim();
-  const isActive = mem?.isActive === true;
-  return { role, isActive };
-}
-
-/* =========================
    Filters / sorting
    ========================= */
 
-const TAB = {
-  PENDING: "pending",
-  CLOSED: "closed",
-  ALL: "all",
-};
+const TAB = { PENDING: "pending", CLOSED: "closed", ALL: "all" };
 
 const SORT = {
   NEWEST: "newest",
@@ -175,74 +144,119 @@ function includesText(t, needle) {
   if (!f) return true;
 
   const from = safeStr(t.createdBy?.name).toLowerCase();
-
-  // ✅ FIX: buscar no preview real (message/description/title/telegram.rawText)
   const msg = taskPreview(t).toLowerCase();
-
   const legacyOfficeComment = safeStr(t.officeComment).toLowerCase();
   const masterComment = safeStr(t.masterComment).toLowerCase();
+  const objComment = t.officeSignal && typeof t.officeSignal === "object" ? safeStr(t.officeSignal.comment).toLowerCase() : "";
 
-  const objComment =
-    t.officeSignal && typeof t.officeSignal === "object"
-      ? safeStr(t.officeSignal.comment).toLowerCase()
-      : "";
-
-  return (
-    from.includes(f) ||
-    msg.includes(f) ||
-    legacyOfficeComment.includes(f) ||
-    objComment.includes(f) ||
-    masterComment.includes(f)
-  );
+  return from.includes(f) || msg.includes(f) || legacyOfficeComment.includes(f) || objComment.includes(f) || masterComment.includes(f);
 }
 
 /* =========================
-   Sound alerts (frontend)
+   Sound (no autostart)
    ========================= */
 
-async function playBeep({ volume = 0.7 } = {}) {
+function clamp(n, a, b) {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return a;
+  return Math.max(a, Math.min(b, x));
+}
+
+function createAudioManagerNoAutostart() {
+  const mgr = { ctx: null, unlocked: false, unlocking: false };
+
+  function getAudioCtor() {
+    return window.AudioContext || window.webkitAudioContext || null;
+  }
+
+  mgr.unlock = async () => {
+    try {
+      const AudioCtor = getAudioCtor();
+      if (!AudioCtor) return false;
+      if (!mgr.ctx) mgr.ctx = new AudioCtor();
+      if (mgr.ctx.state === "running") {
+        mgr.unlocked = true;
+        return true;
+      }
+      if (mgr.unlocking) return false;
+      mgr.unlocking = true;
+      await mgr.ctx.resume();
+      mgr.unlocked = mgr.ctx.state === "running";
+      mgr.unlocking = false;
+      return mgr.unlocked;
+    } catch {
+      mgr.unlocking = false;
+      return false;
+    }
+  };
+
+  mgr.beep = async ({ volume = 0.7, freq = 880, ms = 180 } = {}) => {
+    try {
+      if (!mgr.ctx || mgr.ctx.state !== "running") return false;
+      const o = mgr.ctx.createOscillator();
+      const g = mgr.ctx.createGain();
+      o.type = "sine";
+      o.frequency.value = Number(freq) || 880;
+      g.gain.value = clamp(volume, 0, 1);
+      o.connect(g);
+      g.connect(mgr.ctx.destination);
+      o.start();
+      await new Promise((r) => setTimeout(r, Math.max(60, Number(ms) || 180)));
+      o.stop();
+      try {
+        o.disconnect();
+        g.disconnect();
+      } catch {}
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  return mgr;
+}
+
+/* =========================
+   Local prefs
+   ========================= */
+
+const PREFS_KEY = "vero_office_ui_prefs_v2";
+
+function loadUIPrefs() {
   try {
-    const AudioCtx = window.AudioContext || window.webkitAudioContext;
-    if (!AudioCtx) return false;
-
-    const ctx = new AudioCtx();
-    const o = ctx.createOscillator();
-    const g = ctx.createGain();
-
-    o.type = "sine";
-    o.frequency.value = 880;
-    g.gain.value = Math.max(0, Math.min(1, Number(volume) || 0.7));
-
-    o.connect(g);
-    g.connect(ctx.destination);
-
-    o.start();
-    await new Promise((r) => setTimeout(r, 180));
-    o.stop();
-
-    await ctx.close().catch(() => {});
-    return true;
+    const raw = localStorage.getItem(PREFS_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
   } catch {
-    return false;
+    return null;
   }
 }
 
+function saveUIPrefs(p) {
+  try {
+    localStorage.setItem(PREFS_KEY, JSON.stringify(p));
+  } catch {}
+}
+
+function normalizeBaseUrl(u) {
+  const s = String(u || "").trim();
+  if (!s) return "";
+  return s.replace(/\/+$/, "");
+}
+
+/* =========================
+   Main
+   ========================= */
+
 export default function OfficePanel() {
   const { user } = useAuthUser();
-  const { role, profile } = useRole(user?.uid);
 
-  const telegramLinked = Boolean(profile?.telegram?.linked);
+  const telegramLinked = false;
 
   const [tasks, setTasks] = useState([]);
   const [err, setErr] = useState(null);
   const [toast, setToast] = useState(null);
 
-  // ✅ Membership gate
-  const [membership, setMembership] = useState(null);
-  const [membershipLoading, setMembershipLoading] = useState(true);
-  const [membershipErr, setMembershipErr] = useState(null);
-
-  // filtros
   const [tab, setTab] = useState(TAB.PENDING);
   const [filter, setFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
@@ -250,104 +264,61 @@ export default function OfficePanel() {
   const [sortBy, setSortBy] = useState(SORT.NEWEST);
   const [busyId, setBusyId] = useState(null);
 
-  // admin
-  const [isAdmin, setIsAdmin] = useState(false);
-  const [checkingAdmin, setCheckingAdmin] = useState(true);
-
-  // create user form (admin)
-  const [newEmail, setNewEmail] = useState("");
-  const [newPass, setNewPass] = useState("");
-  const [newName, setNewName] = useState("");
-  const [newMemberRole, setNewMemberRole] = useState("office_user"); // ✅ NEW
-  const [apiBusy, setApiBusy] = useState(false);
-
-  // 🔊 Som
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [soundVolume, setSoundVolume] = useState(0.7);
   const [muteUntilMs, setMuteUntilMs] = useState(0);
 
+  const [fontScale, setFontScale] = useState(1.0);
+  const [density, setDensity] = useState("normal");
+  const [visualAlert, setVisualAlert] = useState("pulse");
+
   const lastBeepMsRef = useRef(0);
   const seenPendingIdsRef = useRef(new Set());
   const lastOfficeStateByIdRef = useRef(new Map());
+  const lastForceByTaskRef = useRef(new Map());
 
-  // ✅ Endpoint do backend (Render)
-  const BOT_BASE_URL = import.meta.env.VITE_BOT_BASE_URL || "";
-  const OFFICE_SECRET = import.meta.env.VITE_OFFICE_API_SECRET || "";
-  const ADMIN_SECRET =
-    import.meta.env.VITE_ADMIN_API_SECRET || import.meta.env.VITE_OFFICE_API_SECRET || "";
+  const audioRef = useRef(null);
+  if (!audioRef.current && typeof window !== "undefined") {
+    audioRef.current = createAudioManagerNoAutostart();
+  }
 
-  // ---------- Membership fetch ----------
+  // ✅ ENV (aceita 3 nomes)
+  const OFFICE_SECRET_RAW = import.meta.env.VITE_OFFICE_API_SECRET || "";
+  const BOT_BASE_URL_RAW =
+    import.meta.env.VITE_OFFICE_API_URL ||
+    import.meta.env.VITE_API_BASE_URL ||
+    import.meta.env.VITE_BOT_BASE_URL ||
+    "";
+
+  const OFFICE_SECRET = String(OFFICE_SECRET_RAW || "").trim();
+  const BOT_BASE_URL = normalizeBaseUrl(BOT_BASE_URL_RAW);
+
+  const envOk = Boolean(BOT_BASE_URL && OFFICE_SECRET);
+  const missing = useMemo(() => {
+    const m = [];
+    if (!BOT_BASE_URL) m.push("VITE_OFFICE_API_URL (ou VITE_API_BASE_URL / VITE_BOT_BASE_URL)");
+    if (!OFFICE_SECRET) m.push("VITE_OFFICE_API_SECRET");
+    return m;
+  }, [BOT_BASE_URL, OFFICE_SECRET]);
+
+  // 🔎 Debug de env (uma vez)
   useEffect(() => {
-    const u = auth.currentUser;
-    if (!u) {
-      setMembership(null);
-      setMembershipLoading(false);
-      setMembershipErr(null);
-      return;
-    }
+    try {
+      // NÃO loga secret; só presença.
+      console.log("[OfficePanel env]", {
+        BOT_BASE_URL,
+        hasOfficeSecret: Boolean(OFFICE_SECRET),
+        officeSecretLen: OFFICE_SECRET ? OFFICE_SECRET.length : 0,
+        mode: import.meta.env.MODE,
+        dev: import.meta.env.DEV,
+        prod: import.meta.env.PROD,
+      });
+    } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-    (async () => {
-      setMembershipLoading(true);
-      setMembershipErr(null);
-      try {
-        const snap = await getDoc(doc(db, "memberships", u.uid));
-        if (!snap.exists()) {
-          setMembership(null);
-        } else {
-          setMembership({ id: snap.id, ...snap.data() });
-        }
-      } catch (e) {
-        setMembershipErr(e?.message || "Falha ao verificar acesso.");
-        setMembership(null);
-      } finally {
-        setMembershipLoading(false);
-      }
-    })();
-  }, [user?.uid]);
-
-  const memNorm = useMemo(() => normalizeMembership(membership), [membership]);
-  const accessAllowed = useMemo(() => {
-    // ✅ política: precisa existir membership e isActive=true
-    // roles válidas no Office:
-    const okRole = ["office_admin", "office_user"].includes(memNorm.role);
-    return memNorm.isActive && okRole;
-  }, [memNorm.role, memNorm.isActive]);
-
-  const isOfficeAdminByMembership = memNorm.isActive && memNorm.role === "office_admin";
-
-  // ---------- Admin check (legacy + membership) ----------
+  // ---------- Live tasks ----------
   useEffect(() => {
-    const u = auth.currentUser;
-    if (!u) {
-      setIsAdmin(false);
-      setCheckingAdmin(false);
-      return;
-    }
-
-    (async () => {
-      try {
-        // ✅ primeiro: membership manda
-        if (isOfficeAdminByMembership) {
-          setIsAdmin(true);
-          return;
-        }
-
-        // ✅ fallback: mantém sua estrutura atual (settings/admins)
-        const ref = doc(db, "settings", "admins", u.uid);
-        const snap = await getDoc(ref);
-        setIsAdmin(snap.exists());
-      } catch {
-        setIsAdmin(false);
-      } finally {
-        setCheckingAdmin(false);
-      }
-    })();
-  }, [user?.uid, isOfficeAdminByMembership]);
-
-  // ---------- Live tasks (só se tiver acesso) ----------
-  useEffect(() => {
-    if (!accessAllowed) return;
-
     const qy = query(collection(db, "tasks"), orderBy("createdAt", "desc"));
     const unsub = onSnapshot(
       qy,
@@ -359,36 +330,44 @@ export default function OfficePanel() {
       },
       (e) => setErr(e?.message || "Falha ao carregar tasks.")
     );
-
     return () => unsub();
-  }, [accessAllowed]);
-
-  // ---------- Sound: load saved prefs ----------
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem("vero_office_sound_prefs");
-      if (raw) {
-        const p = JSON.parse(raw);
-        if (typeof p.enabled === "boolean") setSoundEnabled(p.enabled);
-        if (typeof p.volume === "number") setSoundVolume(Math.max(0, Math.min(1, p.volume)));
-        if (typeof p.muteUntilMs === "number") setMuteUntilMs(p.muteUntilMs);
-      }
-    } catch {}
   }, []);
 
-  // ---------- Sound: persist prefs ----------
+  // ---------- Load prefs ----------
   useEffect(() => {
-    try {
-      localStorage.setItem(
-        "vero_office_sound_prefs",
-        JSON.stringify({ enabled: soundEnabled, volume: soundVolume, muteUntilMs })
-      );
-    } catch {}
-  }, [soundEnabled, soundVolume, muteUntilMs]);
+    const p = loadUIPrefs();
+    if (p) {
+      if (typeof p.soundEnabled === "boolean") setSoundEnabled(p.soundEnabled);
+      if (typeof p.soundVolume === "number") setSoundVolume(clamp(p.soundVolume, 0, 1));
+      if (typeof p.muteUntilMs === "number") setMuteUntilMs(p.muteUntilMs);
+      if (typeof p.fontScale === "number") setFontScale(clamp(p.fontScale, 1, 1.4));
+      if (typeof p.density === "string") setDensity(p.density === "compact" ? "compact" : "normal");
+      if (typeof p.visualAlert === "string") setVisualAlert(p.visualAlert === "none" ? "none" : "pulse");
+    }
+  }, []);
 
-  // ---------- Sound: trigger rules ----------
+  // ---------- Persist prefs ----------
   useEffect(() => {
-    if (!accessAllowed) return;
+    saveUIPrefs({ soundEnabled, soundVolume, muteUntilMs, fontScale, density, visualAlert });
+  }, [soundEnabled, soundVolume, muteUntilMs, fontScale, density, visualAlert]);
+
+  // ---------- Audio unlock on gesture ----------
+  useEffect(() => {
+    const mgr = audioRef.current;
+    if (!mgr) return;
+    const onGesture = async () => {
+      await mgr.unlock().catch(() => {});
+    };
+    window.addEventListener("pointerdown", onGesture, { passive: true });
+    window.addEventListener("keydown", onGesture, { passive: true });
+    return () => {
+      window.removeEventListener("pointerdown", onGesture);
+      window.removeEventListener("keydown", onGesture);
+    };
+  }, []);
+
+  // ---------- Beep rules ----------
+  useEffect(() => {
     if (!soundEnabled) return;
     if (muteUntilMs && nowMs() < muteUntilMs) return;
 
@@ -410,41 +389,27 @@ export default function OfficePanel() {
 
     for (const t of tasks) {
       if (!t?.id) continue;
-
       const curState = normalizeOfficeState(t.officeSignal);
       const prev = lastOfficeStateByIdRef.current.get(t.id) || "";
-
       if (curState && curState !== prev) {
-        if (
-          curState === OFFICE_SIGNAL.PRECISO_AJUDA ||
-          curState === OFFICE_SIGNAL.APRESENTOU_PROBLEMAS
-        ) {
+        if (curState === OFFICE_SIGNAL.PRECISO_AJUDA || curState === OFFICE_SIGNAL.APRESENTOU_PROBLEMAS) {
           shouldBeep = true;
         }
       }
-
       lastOfficeStateByIdRef.current.set(t.id, curState);
     }
 
-    if (shouldBeep && canBeep()) {
+    const mgr = audioRef.current;
+    if (shouldBeep && canBeep() && mgr) {
       lastBeepMsRef.current = nowMs();
-      playBeep({ volume: soundVolume }).then((ok) => {
-        if (!ok) {
-          const key = "vero_office_sound_warned";
-          try {
-            const warned = localStorage.getItem(key);
-            if (!warned) {
-              localStorage.setItem(key, "1");
-              setToast("🔊 Ative o áudio: clique em qualquer botão na página para liberar o som.");
-            }
-          } catch {}
-        }
+      mgr.beep({ volume: soundVolume }).then((ok) => {
+        if (!ok) setToast("🔊 Áudio bloqueado: clique/tap na tela para liberar o som.");
       });
     }
-  }, [tasks, soundEnabled, soundVolume, muteUntilMs, accessAllowed]);
+  }, [tasks, soundEnabled, soundVolume, muteUntilMs]);
 
   // ---------- Office API call ----------
-  async function callOfficeSignalApi({ taskId, state, comment, by }) {
+  async function callOfficeSignalApi({ taskId, state, comment, by, forceNotify = false }) {
     if (!BOT_BASE_URL || !OFFICE_SECRET) {
       return { ok: false, skipped: true, reason: "missing_env" };
     }
@@ -455,16 +420,8 @@ export default function OfficePanel() {
     try {
       res = await fetch(url, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-office-secret": OFFICE_SECRET,
-        },
-        body: JSON.stringify({
-          taskId,
-          state,
-          comment: comment || "",
-          by: by || null,
-        }),
+        headers: { "Content-Type": "application/json", "x-office-secret": OFFICE_SECRET },
+        body: JSON.stringify({ taskId, state, comment: comment || "", by: by || null, forceNotify: Boolean(forceNotify) }),
       });
     } catch (netErr) {
       throw new Error(`Falha de rede/CORS: ${netErr?.message || netErr}`);
@@ -478,21 +435,39 @@ export default function OfficePanel() {
       throw new Error(`Resposta não-JSON do backend (status ${res.status}).`);
     }
 
-    if (!res.ok || !data.ok) {
-      throw new Error(data?.error || `Falha HTTP ${res.status}`);
-    }
-
+    if (!res.ok || !data.ok) throw new Error(data?.error || `Falha HTTP ${res.status}`);
     return data;
   }
 
+  async function unlockTask(taskId) {
+    try {
+      await updateDoc(doc(db, "tasks", taskId), {
+        officeSignalLock: false,
+        officeSignalLockedAt: null,
+        officeSignalLockedBy: null,
+        updatedAt: serverTimestamp(),
+      });
+    } catch {}
+  }
+
   const updateSignal = useCallback(
-    async (taskId, state, comment = "", { lock = false } = {}) => {
+    async (taskId, state, comment = "", { lock = false, forceNotify = false } = {}) => {
       setBusyId(taskId);
       setErr(null);
       setToast(null);
 
-      if (soundEnabled && (!muteUntilMs || nowMs() >= muteUntilMs)) {
-        playBeep({ volume: 0.001 }).catch(() => {});
+      const mgr = audioRef.current;
+      if (mgr) mgr.unlock().catch(() => {});
+
+      if (forceNotify) {
+        const last = lastForceByTaskRef.current.get(taskId) || 0;
+        const minGap = 15000;
+        if (nowMs() - last < minGap) {
+          setToast(`🕒 Aguarde ${msToHuman(minGap - (nowMs() - last))} para reenviar novamente.`);
+          setBusyId(null);
+          return;
+        }
+        lastForceByTaskRef.current.set(taskId, nowMs());
       }
 
       try {
@@ -524,122 +499,31 @@ export default function OfficePanel() {
 
         await updateDoc(ref, patch);
 
+        let resp = null;
         try {
-          const resp = await callOfficeSignalApi({
-            taskId,
-            state,
-            comment,
-            by: { uid: byUid, email: byEmail },
-          });
-
-          if (resp?.telegramOk === false) {
-            setToast(
-              `⚠️ Sinal salvo, mas não consegui avisar o master agora.\n${
-                resp?.telegram?.description || "Telegram falhou."
-              }`
-            );
-          } else if (resp?.notified === true) {
-            setToast("✅ Sinal enviado ao master.");
-          } else if (resp?.reason === "cooldown") {
-            setToast("🕒 Sinal salvo. Anti-spam: master já foi avisado recentemente (~90s).");
-          } else if (resp?.reason === "duplicate" || resp?.skipped) {
-            setToast("ℹ️ Sinal idêntico ao anterior. Não reenviado.");
-          } else {
-            setToast("✅ Sinal salvo. (Sem nova notificação agora.)");
-          }
+          resp = await callOfficeSignalApi({ taskId, state, comment, by: { uid: byUid, email: byEmail }, forceNotify });
         } catch (apiErr) {
+          if (lock) await unlockTask(taskId);
           setToast(`⚠️ Sinal salvo, mas falhou avisar o master.\n${apiErr?.message || "Erro no backend."}`);
+          return;
         }
+
+        const notified = resp?.notified === true;
+        if (notified) setToast(forceNotify ? "✅ Reenviado ao master (forçado)." : "✅ Sinal enviado ao master.");
+        else setToast("✅ Sinal salvo. (Sem nova notificação agora.)");
       } catch (e) {
         setErr(e?.message || "Falha ao sinalizar.");
       } finally {
         setBusyId(null);
       }
     },
-    [BOT_BASE_URL, OFFICE_SECRET, soundEnabled, muteUntilMs, soundVolume]
+    [BOT_BASE_URL, OFFICE_SECRET]
   );
 
   async function onLogout() {
     await signOut(auth);
   }
 
-  async function createUserViaBot() {
-    try {
-      setToast(null);
-
-      if (!isAdmin) {
-        setToast("🚫 Você não é admin para criar usuários.");
-        return;
-      }
-      if (!BOT_BASE_URL) {
-        setToast("🚫 Faltou configurar VITE_BOT_BASE_URL no Netlify.");
-        return;
-      }
-      if (!ADMIN_SECRET) {
-        setToast("🚫 Faltou configurar VITE_ADMIN_API_SECRET (ou VITE_OFFICE_API_SECRET) no Netlify.");
-        return;
-      }
-      if (!newEmail.trim() || !newPass || newPass.length < 6) {
-        setToast("⚠️ Preencha email e senha (mínimo 6 caracteres).");
-        return;
-      }
-
-      setApiBusy(true);
-
-      const res = await fetch(`${BOT_BASE_URL}/admin/createUser`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-admin-secret": ADMIN_SECRET,
-        },
-        body: JSON.stringify({
-          email: newEmail.trim(),
-          password: newPass,
-          name: newName || newEmail.trim().split("@")[0],
-          role: "office", // mantém compat
-          active: true,
-          membershipRole: newMemberRole, // opcional (se backend quiser usar)
-        }),
-      });
-
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data.ok) throw new Error(data?.error || `Falha HTTP ${res.status}`);
-
-      // ✅ grava membership (libera acesso imediatamente)
-      try {
-        const createdUid = data.uid;
-        if (createdUid) {
-          const byUid = auth.currentUser?.uid || "";
-          await setDoc(
-            doc(db, "memberships", createdUid),
-            {
-              role: newMemberRole,
-              isActive: true,
-              createdAt: serverTimestamp(),
-              createdByUid: byUid || null,
-              updatedAt: serverTimestamp(),
-            },
-            { merge: true }
-          );
-        }
-      } catch (e) {
-        // não quebra o fluxo, mas avisa
-        setToast(`⚠️ Usuário criado, mas falhou liberar acesso (memberships).\n${e?.message || "Erro Firestore."}`);
-      }
-
-      setToast(`✅ Usuário criado: ${data.email} (${data.uid})`);
-      setNewEmail("");
-      setNewPass("");
-      setNewName("");
-      setNewMemberRole("office_user");
-    } catch (e) {
-      setToast(e?.message || "Falha ao criar usuário.");
-    } finally {
-      setApiBusy(false);
-    }
-  }
-
-  // ---------- Visible ----------
   const visible = useMemo(() => {
     let base = tasks;
 
@@ -692,426 +576,244 @@ export default function OfficePanel() {
   const muteLeft = isMuted ? msToHuman(muteUntilMs - nowMs()) : "";
 
   const userLabel = user?.email || auth.currentUser?.email || "—";
-  const effectiveRole = checkingAdmin ? "" : isAdmin ? "admin" : memNorm.role || role || "office";
-  const showMasterNav = role === "master" || isAdmin;
 
-  // ---------- Gate UI ----------
-  if (membershipLoading) {
-    return (
-      <Shell
-        title="VeroTasks"
-        subtitle="Painel do Escritório"
-        userLabel={userLabel}
-        role={effectiveRole}
-        telegramLinked={telegramLinked}
-        onLogout={onLogout}
-        showMasterNav={showMasterNav}
-      >
-        <Card style={{ marginTop: 14 }}>
-          <div style={{ fontWeight: 900, marginBottom: 6 }}>Verificando acesso…</div>
-          <div style={{ opacity: 0.8 }}>Aguarde um instante.</div>
-        </Card>
-      </Shell>
-    );
-  }
-
-  if (!accessAllowed) {
-    return (
-      <Shell
-        title="VeroTasks"
-        subtitle="Painel do Escritório"
-        userLabel={userLabel}
-        role={effectiveRole}
-        telegramLinked={telegramLinked}
-        onLogout={onLogout}
-        showMasterNav={showMasterNav}
-      >
-        <Card style={{ marginTop: 14 }}>
-          <div style={{ fontWeight: 900, marginBottom: 6 }}>🚫 Sem acesso liberado</div>
-
-          {membershipErr ? (
-            <Toast tone="bad" style={{ marginTop: 10 }}>
-              {membershipErr}
-            </Toast>
-          ) : (
-            <div style={{ opacity: 0.85, lineHeight: 1.4 }}>
-              Seu usuário está autenticado, mas não tem permissão no <code>memberships/{auth.currentUser?.uid}</code>.
-              <br />
-              Peça para um <b>office_admin</b> liberar seu acesso.
-            </div>
-          )}
-
-          <div style={{ marginTop: 12, display: "flex", gap: 10, flexWrap: "wrap" }}>
-            <Button onClick={onLogout} tone="ghost">
-              Sair
-            </Button>
-          </div>
-        </Card>
-      </Shell>
-    );
-  }
+  const padCard = density === "compact" ? 10 : 14;
+  const titleSize = density === "compact" ? 15 : 16;
+  const metaSize = 12;
+  const previewScale = fontScale;
 
   return (
-    <Shell
-      title="VeroTasks"
-      subtitle="Painel do Escritório"
-      userLabel={userLabel}
-      role={effectiveRole}
-      telegramLinked={telegramLinked}
-      onLogout={onLogout}
-      showMasterNav={showMasterNav}
-    >
-      {/* TOASTS */}
-      {toast ? (
-        <Toast tone={toastTone(toast)} style={{ marginTop: 12 }}>
-          <div style={{ whiteSpace: "pre-wrap" }}>{toast}</div>
-        </Toast>
-      ) : null}
-
-      {err ? (
-        <Toast tone="bad" style={{ marginTop: 12 }}>
-          {err}
-        </Toast>
-      ) : null}
-
-      {/* FILTERS + SOUND (mantendo seu layout) */}
-      <Card style={{ marginTop: 14 }}>
-        <div style={{ display: "flex", gap: 10, alignItems: "end", flexWrap: "wrap" }}>
-          <Input
-            label="Buscar"
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-            placeholder="Nome, mensagem, comentário..."
-          />
-
-          {/* TABS */}
-          <div style={{ display: "grid", gap: 6 }}>
-            <label style={{ fontSize: 12, opacity: 0.75 }}>Visão</label>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <Button tone={tab === TAB.PENDING ? "primary" : "ghost"} onClick={() => setTab(TAB.PENDING)}>
-                Pendentes ({counts.pending})
-              </Button>
-              <Button tone={tab === TAB.CLOSED ? "primary" : "ghost"} onClick={() => setTab(TAB.CLOSED)}>
-                Finalizadas ({counts.closed})
-              </Button>
-              <Button tone={tab === TAB.ALL ? "primary" : "ghost"} onClick={() => setTab(TAB.ALL)}>
-                Todas ({counts.all})
-              </Button>
-            </div>
-          </div>
-
-          {/* STATUS FILTER */}
-          <div style={{ display: "grid", gap: 6 }}>
-            <label style={{ fontSize: 12, opacity: 0.75 }}>Status</label>
-            <select
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
-              style={{
-                height: 40,
-                borderRadius: 12,
-                border: "1px solid rgba(255,255,255,0.12)",
-                background: "rgba(0,0,0,0.25)",
-                color: "#e5e7eb",
-                padding: "0 10px",
-                outline: "none",
-                minWidth: 160,
-              }}
-            >
-              <option value="">Todos</option>
-              <option value="aberta">Aberta</option>
-              <option value="pendente">Pendente</option>
-              <option value="feito">Feito</option>
-              <option value="feito_detalhes">Feito (detalhes)</option>
-              <option value="deu_ruim">Deu ruim</option>
-            </select>
-          </div>
-
-          {/* PRIORITY FILTER */}
-          <div style={{ display: "grid", gap: 6 }}>
-            <label style={{ fontSize: 12, opacity: 0.75 }}>Prioridade</label>
-            <select
-              value={prioFilter}
-              onChange={(e) => setPrioFilter(e.target.value)}
-              style={{
-                height: 40,
-                borderRadius: 12,
-                border: "1px solid rgba(255,255,255,0.12)",
-                background: "rgba(0,0,0,0.25)",
-                color: "#e5e7eb",
-                padding: "0 10px",
-                outline: "none",
-                minWidth: 140,
-              }}
-            >
-              <option value="">Todas</option>
-              <option value="alta">Alta</option>
-              <option value="media">Média</option>
-              <option value="baixa">Baixa</option>
-            </select>
-          </div>
-
-          {/* SORT */}
-          <div style={{ display: "grid", gap: 6 }}>
-            <label style={{ fontSize: 12, opacity: 0.75 }}>Ordenar</label>
-            <select
-              value={sortBy}
-              onChange={(e) => setSortBy(e.target.value)}
-              style={{
-                height: 40,
-                borderRadius: 12,
-                border: "1px solid rgba(255,255,255,0.12)",
-                background: "rgba(0,0,0,0.25)",
-                color: "#e5e7eb",
-                padding: "0 10px",
-                outline: "none",
-                minWidth: 160,
-              }}
-            >
-              <option value={SORT.NEWEST}>Mais recentes</option>
-              <option value={SORT.OLDEST}>Mais antigas</option>
-              <option value={SORT.PRIORITY}>Prioridade</option>
-              <option value={SORT.LAST_SIGNAL}>Último sinal</option>
-            </select>
-          </div>
-
-          {/* SOUND */}
-          <div style={{ display: "grid", gap: 6 }}>
-            <label style={{ fontSize: 12, opacity: 0.75 }}>Som</label>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-              <Button
-                tone={soundEnabled ? "primary" : "ghost"}
-                onClick={() => {
-                  setSoundEnabled((v) => !v);
-                  setToast(soundEnabled ? "🔊 Som desativado." : "🔊 Som ativado.");
-                }}
-              >
-                {soundEnabled ? "🔊 Ligado" : "🔇 Desligado"}
-              </Button>
-
-              <Button
-                tone={isMuted ? "warn" : "ghost"}
-                disabled={!soundEnabled}
-                onClick={() => {
-                  const until = nowMs() + 30 * 60 * 1000;
-                  setMuteUntilMs(until);
-                  setToast("🔊 Silenciado por 30 min.");
-                }}
-              >
-                {isMuted ? `Silenciado (${muteLeft})` : "Silenciar 30 min"}
-              </Button>
-
-              {isMuted ? (
-                <Button
-                  tone="ghost"
-                  onClick={() => {
-                    setMuteUntilMs(0);
-                    setToast("🔊 Silêncio removido.");
-                  }}
-                >
-                  Reativar
-                </Button>
-              ) : null}
-
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <span style={{ fontSize: 12, opacity: 0.75 }}>Vol</span>
-                <input
-                  type="range"
-                  min="0"
-                  max="1"
-                  step="0.05"
-                  value={soundVolume}
-                  disabled={!soundEnabled}
-                  onChange={(e) => setSoundVolume(Number(e.target.value))}
-                />
-                <Button
-                  tone="ghost"
-                  disabled={!soundEnabled || (muteUntilMs && nowMs() < muteUntilMs)}
-                  onClick={async () => {
-                    const ok = await playBeep({ volume: soundVolume });
-                    setToast(ok ? "🔊 Teste: ok." : "🔊 Não consegui tocar (clique em qualquer botão e tente de novo).");
-                  }}
-                >
-                  Testar
-                </Button>
-              </div>
-            </div>
-          </div>
-        </div>
-      </Card>
-
-      {/* ADMIN CARD */}
-      {isAdmin ? (
-        <Card style={{ marginTop: 14 }}>
-          <div style={{ fontWeight: 900, marginBottom: 10 }}>Admin — Criar usuário do escritório</div>
-
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 220px auto", gap: 10 }}>
-            <Input label="Nome" value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Priscila" />
-            <Input
-              label="Email"
-              type="email"
-              value={newEmail}
-              onChange={(e) => setNewEmail(e.target.value)}
-              placeholder="office@empresa.com"
-            />
-            <Input
-              label="Senha"
-              type="password"
-              value={newPass}
-              onChange={(e) => setNewPass(e.target.value)}
-              placeholder="mín. 6"
-            />
-
-            <div style={{ display: "grid", gap: 6 }}>
-              <label style={{ fontSize: 12, opacity: 0.75 }}>Papel</label>
-              <select
-                value={newMemberRole}
-                onChange={(e) => setNewMemberRole(e.target.value)}
-                style={{
-                  height: 40,
-                  borderRadius: 12,
-                  border: "1px solid rgba(255,255,255,0.12)",
-                  background: "rgba(0,0,0,0.25)",
-                  color: "#e5e7eb",
-                  padding: "0 10px",
-                  outline: "none",
-                }}
-              >
-                <option value="office_user">office_user</option>
-                <option value="office_admin">office_admin</option>
-              </select>
-            </div>
-
-            <div style={{ display: "grid", gap: 6 }}>
-              <label style={{ fontSize: 12, opacity: 0.75 }}>Ação</label>
-              <Button disabled={apiBusy} onClick={createUserViaBot}>
-                {apiBusy ? "Criando..." : "Criar usuário"}
-              </Button>
-            </div>
-          </div>
-
-          <div style={{ marginTop: 10, fontSize: 12, opacity: 0.75 }}>
-            *Este fluxo cria o usuário via BOT (Admin SDK) e grava o membership para liberar acesso.
-          </div>
-        </Card>
-      ) : null}
-
-      {/* LIST */}
-      <div style={{ marginTop: 14, display: "grid", gap: 12 }}>
-        {visible.length === 0 ? (
-          <Card>
-            <div style={{ opacity: 0.85 }}>Nenhuma tarefa encontrada.</div>
-          </Card>
+    <>
+      <Shell
+        title="VeroTasks"
+        subtitle="Painel do Escritório"
+        userLabel={userLabel}
+        role="office"
+        telegramLinked={telegramLinked}
+        onLogout={onLogout}
+        showMasterNav={true}
+      >
+        {toast ? (
+          <Toast tone={toastTone(toast)} style={{ marginTop: 12 }}>
+            <div style={{ whiteSpace: "pre-wrap" }}>{toast}</div>
+          </Toast>
         ) : null}
 
-        {visible.map((t) => {
-          const pr = badgePriority(t.priority);
-          const st = badgeStatus(t.status);
+        {err ? (
+          <Toast tone="bad" style={{ marginTop: 12 }}>
+            {err}
+          </Toast>
+        ) : null}
 
-          const createdAt = t.createdAt?.toDate ? t.createdAt.toDate() : null;
-          const officeSignaledAt = t.officeSignaledAt?.toDate ? t.officeSignaledAt.toDate() : null;
+        {!envOk ? (
+          <Toast tone="warn" style={{ marginTop: 12 }}>
+            ⚠️ Backend não configurado no front.
+            <br />
+            <br />
+            <b>Faltando:</b>
+            <br />- {missing.join("\n- ")}
+            <br />
+            <br />
+            <b>Detectado agora:</b>
+            <br />- BOT_BASE_URL: <code>{BOT_BASE_URL || "(vazio)"}</code>
+            <br />- OFFICE_SECRET: <code>{OFFICE_SECRET ? "(ok)" : "(vazio)"}</code>
+          </Toast>
+        ) : null}
 
-          const officeState = normalizeOfficeState(t.officeSignal);
+        <Card style={{ marginTop: 14 }}>
+          <div style={{ display: "flex", gap: 10, alignItems: "end", flexWrap: "wrap" }}>
+            <Input label="Buscar" value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Nome, mensagem, comentário..." />
 
-          const locked = Boolean(t.officeSignalLock) || isClosedStatus(t.status);
-          const disabled = busyId === t.id || locked;
-
-          const age = createdAt ? msToHuman(nowMs() - createdAt.getTime()) : "—";
-          const lastSignalAgo = officeSignaledAt ? msToHuman(nowMs() - officeSignaledAt.getTime()) : "—";
-
-          const preview = taskPreview(t);
-
-          return (
-            <Card key={t.id} style={{ display: "grid", gap: 10 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                <div style={{ fontSize: 16, fontWeight: 900, flex: 1, minWidth: 240 }}>
-                  {preview}
-                </div>
-
-                <Badge tone={pr.tone}>⚡ {pr.text}</Badge>
-                <Badge tone={st.tone}>📌 {st.text}</Badge>
-                <Badge tone="neutral">🚦 {signalLabel(officeState)}</Badge>
+            <div style={{ display: "grid", gap: 6 }}>
+              <label style={{ fontSize: 12, opacity: 0.75 }}>Visão</label>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <Button tone={tab === TAB.PENDING ? "primary" : "ghost"} onClick={() => setTab(TAB.PENDING)}>
+                  Pendentes ({counts.pending})
+                </Button>
+                <Button tone={tab === TAB.CLOSED ? "primary" : "ghost"} onClick={() => setTab(TAB.CLOSED)}>
+                  Finalizadas ({counts.closed})
+                </Button>
+                <Button tone={tab === TAB.ALL ? "primary" : "ghost"} onClick={() => setTab(TAB.ALL)}>
+                  Todas ({counts.all})
+                </Button>
               </div>
+            </div>
 
-              <div style={{ display: "flex", gap: 14, flexWrap: "wrap", opacity: 0.85 }}>
-                <div>
-                  🧾 ID: <code style={{ opacity: 0.9 }}>{t.id}</code>
-                </div>
-                <div>
-                  👤 De: <b>{safeStr(t.createdBy?.name) || "—"}</b>
-                </div>
-                <div>
-                  🕒 Criada: {createdAt ? fmtDateTime(createdAt) : "—"} • <b>{age}</b>
-                </div>
-                <div>
-                  🧷 Último sinal: {officeSignaledAt ? fmtDateTime(officeSignaledAt) : "—"} • <b>{lastSignalAgo}</b>
-                </div>
-              </div>
-
-              {t.details ? (
-                <div style={{ background: "rgba(255,255,255,0.04)", padding: 12, borderRadius: 12 }}>
-                  <div style={{ fontWeight: 900, marginBottom: 6 }}>Detalhes (master)</div>
-                  <div style={{ whiteSpace: "pre-wrap", opacity: 0.9 }}>{safeStr(t.details)}</div>
-                </div>
-              ) : null}
-
-              {t.officeComment ? (
-                <div style={{ background: "rgba(255,255,255,0.04)", padding: 12, borderRadius: 12 }}>
-                  <div style={{ fontWeight: 900, marginBottom: 6 }}>Comentário do escritório</div>
-                  <div style={{ whiteSpace: "pre-wrap", opacity: 0.9 }}>{safeStr(t.officeComment)}</div>
-                </div>
-              ) : null}
-
-              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                <Button onClick={() => updateSignal(t.id, OFFICE_SIGNAL.EM_ANDAMENTO, "", { lock: false })} disabled={disabled}>
-                  Em andamento
+            <div style={{ display: "grid", gap: 6 }}>
+              <label style={{ fontSize: 12, opacity: 0.75 }}>Som</label>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                <Button
+                  tone={soundEnabled ? "primary" : "ghost"}
+                  onClick={async () => {
+                    setSoundEnabled((v) => !v);
+                    const mgr = audioRef.current;
+                    if (mgr) await mgr.unlock().catch(() => {});
+                    setToast(soundEnabled ? "🔊 Som desativado." : "🔊 Som ativado.");
+                  }}
+                >
+                  {soundEnabled ? "🔊 Ligado" : "🔇 Desligado"}
                 </Button>
 
                 <Button
-                  tone="warn"
-                  onClick={() => updateSignal(t.id, OFFICE_SIGNAL.PRECISO_AJUDA, "", { lock: false })}
-                  disabled={disabled}
+                  tone={isMuted ? "warn" : "ghost"}
+                  disabled={!soundEnabled}
+                  onClick={() => {
+                    const until = nowMs() + 30 * 60 * 1000;
+                    setMuteUntilMs(until);
+                    setToast("🔊 Silenciado por 30 min.");
+                  }}
                 >
-                  Preciso de ajuda
+                  {isMuted ? `Silenciado (${muteLeft})` : "Silenciar 30 min"}
                 </Button>
 
-                <Button
-                  tone="bad"
-                  onClick={() =>
-                    updateSignal(t.id, OFFICE_SIGNAL.APRESENTOU_PROBLEMAS, "🚫 Apresentou problemas", { lock: true })
-                  }
-                  disabled={disabled}
-                >
-                  Apresentou problemas
-                </Button>
-
-                <Button
-                  tone="primary"
-                  onClick={() => updateSignal(t.id, OFFICE_SIGNAL.TAREFA_EXECUTADA, "✅ Tarefa executada", { lock: true })}
-                  disabled={disabled}
-                >
-                  Tarefa executada
-                </Button>
-
-                <CommentButton
-                  task={t}
-                  busy={disabled}
-                  onSave={(text) => updateSignal(t.id, OFFICE_SIGNAL.COMENTARIO, text, { lock: true })}
-                />
-              </div>
-
-              <div style={{ fontSize: 12, opacity: 0.72 }}>
-                *O escritório apenas sinaliza. <b>Conclusão final</b> é exclusiva do Master/Telegram.
-                {locked ? (
-                  <div style={{ marginTop: 6, opacity: 0.85 }}>
-                    🔒 Sinalização bloqueada para evitar spam (aguardando ação do Master).
-                  </div>
+                {isMuted ? (
+                  <Button
+                    tone="ghost"
+                    onClick={() => {
+                      setMuteUntilMs(0);
+                      setToast("🔊 Silêncio removido.");
+                    }}
+                  >
+                    Reativar
+                  </Button>
                 ) : null}
+
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ fontSize: 12, opacity: 0.75 }}>Vol</span>
+                  <input type="range" min="0" max="1" step="0.05" value={soundVolume} disabled={!soundEnabled} onChange={(e) => setSoundVolume(Number(e.target.value))} />
+                  <Button
+                    tone="ghost"
+                    disabled={!soundEnabled || (muteUntilMs && nowMs() < muteUntilMs)}
+                    onClick={async () => {
+                      const mgr = audioRef.current;
+                      if (!mgr) return setToast("🔊 Áudio indisponível neste navegador.");
+                      await mgr.unlock().catch(() => {});
+                      const ok = await mgr.beep({ volume: soundVolume });
+                      setToast(ok ? "🔊 Teste: ok." : "🔊 Clique/tap na tela e tente de novo.");
+                    }}
+                  >
+                    Testar
+                  </Button>
+                </div>
               </div>
+            </div>
+          </div>
+        </Card>
+
+        <div style={{ marginTop: 14, display: "grid", gap: 12 }}>
+          {visible.length === 0 ? (
+            <Card>
+              <div style={{ opacity: 0.85 }}>Nenhuma tarefa encontrada.</div>
             </Card>
-          );
-        })}
-      </div>
-    </Shell>
+          ) : null}
+
+          {visible.map((t) => {
+            const pr = badgePriority(t.priority);
+            const st = badgeStatus(t.status);
+
+            const createdAt = t.createdAt?.toDate ? t.createdAt.toDate() : null;
+            const officeSignaledAt = t.officeSignaledAt?.toDate ? t.officeSignaledAt.toDate() : null;
+
+            const officeState = normalizeOfficeState(t.officeSignal);
+
+            const lockedByMaster = isClosedStatus(t.status);
+            const disabled = busyId === t.id || lockedByMaster;
+
+            const age = createdAt ? msToHuman(nowMs() - createdAt.getTime()) : "—";
+            const lastSignalAgo = officeSignaledAt ? msToHuman(nowMs() - officeSignaledAt.getTime()) : "—";
+            const preview = taskPreview(t);
+
+            const isAlertState = officeState === OFFICE_SIGNAL.PRECISO_AJUDA || officeState === OFFICE_SIGNAL.APRESENTOU_PROBLEMAS;
+
+            const pulse =
+              visualAlert === "pulse" && isAlertState && !isClosedStatus(t.status)
+                ? { animation: "veroPulse 1.2s ease-in-out infinite" }
+                : {};
+
+            return (
+              <Card key={t.id} style={{ display: "grid", gap: 10, padding: padCard, ...(pulse || {}) }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                  <div
+                    style={{
+                      fontSize: titleSize,
+                      fontWeight: 950,
+                      flex: 1,
+                      minWidth: 240,
+                      transform: `scale(${previewScale})`,
+                      transformOrigin: "left center",
+                    }}
+                  >
+                    {preview}
+                  </div>
+
+                  <Badge tone={pr.tone}>⚡ {pr.text}</Badge>
+                  <Badge tone={st.tone}>📌 {st.text}</Badge>
+                  <Badge tone="neutral">🚦 {signalLabel(officeState)}</Badge>
+                </div>
+
+                <div style={{ display: "flex", gap: 14, flexWrap: "wrap", opacity: 0.85, fontSize: metaSize }}>
+                  <div>
+                    🧾 ID: <code style={{ opacity: 0.9 }}>{t.id}</code>
+                  </div>
+                  <div>
+                    👤 De: <b>{safeStr(t.createdBy?.name) || "—"}</b>
+                  </div>
+                  <div>
+                    🕒 Criada: {createdAt ? fmtDateTime(createdAt) : "—"} • <b>{age}</b>
+                  </div>
+                  <div>
+                    🧷 Último sinal: {officeSignaledAt ? fmtDateTime(officeSignaledAt) : "—"} • <b>{lastSignalAgo}</b>
+                  </div>
+                </div>
+
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                  <Button onClick={() => updateSignal(t.id, OFFICE_SIGNAL.EM_ANDAMENTO, "", { lock: false })} disabled={disabled || !envOk}>
+                    Em andamento
+                  </Button>
+
+                  <Button tone="warn" onClick={() => updateSignal(t.id, OFFICE_SIGNAL.PRECISO_AJUDA, "", { lock: false })} disabled={disabled || !envOk}>
+                    Preciso de ajuda
+                  </Button>
+
+                  <Button
+                    tone="bad"
+                    onClick={() => updateSignal(t.id, OFFICE_SIGNAL.APRESENTOU_PROBLEMAS, "🚫 Apresentou problemas", { lock: true })}
+                    disabled={disabled || !envOk}
+                  >
+                    Apresentou problemas
+                  </Button>
+
+                  <Button
+                    tone="primary"
+                    onClick={() => updateSignal(t.id, OFFICE_SIGNAL.TAREFA_EXECUTADA, "✅ Tarefa executada", { lock: true })}
+                    disabled={disabled || !envOk}
+                  >
+                    Tarefa executada
+                  </Button>
+
+                  <CommentButton task={t} busy={disabled || !envOk} onSave={(text) => updateSignal(t.id, OFFICE_SIGNAL.COMENTARIO, text, { lock: true })} />
+                </div>
+
+                <div style={{ fontSize: 12, opacity: 0.72 }}>
+                  *O escritório apenas sinaliza. <b>Conclusão final</b> é exclusiva do Master/Telegram.
+                  {lockedByMaster ? (
+                    <div style={{ marginTop: 6, opacity: 0.85 }}>🔒 Master finalizou esta tarefa. A sinalização do Office está bloqueada.</div>
+                  ) : null}
+                </div>
+              </Card>
+            );
+          })}
+        </div>
+      </Shell>
+
+      <style>{`
+        @keyframes veroPulse {
+          0% { box-shadow: 0 0 0 rgba(99,102,241,0.0); }
+          50% { box-shadow: 0 0 0 6px rgba(99,102,241,0.10); }
+          100% { box-shadow: 0 0 0 rgba(99,102,241,0.0); }
+        }
+      `}</style>
+    </>
   );
 }
 
@@ -1124,7 +826,6 @@ function CommentButton({ task, busy, onSave }) {
   const [text, setText] = useState(safeStr(task.officeComment) || "");
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setText(safeStr(task.officeComment) || "");
   }, [task.officeComment]);
 
@@ -1139,9 +840,7 @@ function CommentButton({ task, busy, onSave }) {
   return (
     <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "end" }}>
       <div style={{ minWidth: "min(420px, 90vw)" }}>
-        <label style={{ display: "block", fontSize: 12, opacity: 0.75, marginBottom: 6 }}>
-          Comentário
-        </label>
+        <label style={{ display: "block", fontSize: 12, opacity: 0.75, marginBottom: 6 }}>Comentário</label>
         <textarea
           value={text}
           onChange={(e) => setText(e.target.value)}

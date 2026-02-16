@@ -3,9 +3,6 @@ import React from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
 
 import RequireAuth from "./auth/RequireAuth";
-import RequireMaster from "./auth/RequireMaster";
-import RequireOfficeAdmin from "./auth/RequireOfficeAdmin";
-import RequireOfficeAccess from "./auth/RequireOfficeAccess";
 
 import Login from "./pages/Login";
 import OfficePanel from "./pages/OfficePanel";
@@ -14,25 +11,13 @@ import Collaborators from "./pages/Collaborators";
 import TelegramLink from "./pages/TelegramLink";
 import NotFound from "./pages/NotFound";
 
-import OfficeAccess from "./pages/OfficeAccess";
-import AccessBlocked from "./pages/AccessBlocked";
-
 export default function App() {
   return (
     <Routes>
+      {/* Login */}
       <Route path="/login" element={<Login />} />
 
-      {/* Bloqueado (sem membership/sem acesso) */}
-      <Route
-        path="/blocked"
-        element={
-          <RequireAuth>
-            <AccessBlocked />
-          </RequireAuth>
-        }
-      />
-
-      {/* Área autenticada */}
+      {/* Root -> Office */}
       <Route
         path="/"
         element={
@@ -42,55 +27,47 @@ export default function App() {
         }
       />
 
-      {/* Office (exige membership ativo) */}
+      {/* Office */}
       <Route
         path="/office"
         element={
-          <RequireOfficeAccess>
+          <RequireAuth>
             <OfficePanel />
-          </RequireOfficeAccess>
+          </RequireAuth>
         }
       />
 
-      {/* ✅ Office Admin-only: gestão de acessos/pessoas */}
-      <Route
-        path="/office/access"
-        element={
-          <RequireOfficeAdmin>
-            <OfficeAccess />
-          </RequireOfficeAdmin>
-        }
-      />
-
-      {/* Telegram link (exige membership ativo) */}
-      <Route
-        path="/telegram"
-        element={
-          <RequireOfficeAccess>
-            <TelegramLink />
-          </RequireOfficeAccess>
-        }
-      />
-
-      {/* Master-only */}
+      {/* Master */}
       <Route
         path="/master"
         element={
-          <RequireMaster>
+          <RequireAuth>
             <MasterPanel />
-          </RequireMaster>
+          </RequireAuth>
         }
       />
 
+      {/* Colaboradores */}
       <Route
         path="/collaborators"
         element={
-          <RequireMaster>
+          <RequireAuth>
             <Collaborators />
-          </RequireMaster>
+          </RequireAuth>
         }
       />
 
+      {/* Telegram */}
+      <Route
+        path="/telegram"
+        element={
+          <RequireAuth>
+            <TelegramLink />
+          </RequireAuth>
+        }
+      />
+
+      {/* 404 */}
       <Route path="*" element={<NotFound />} />
     </Routes>
   );

@@ -1,7 +1,10 @@
-﻿import React, { useMemo, useState } from "react";
+﻿// src/pages/Login.jsx
+import React, { useMemo, useState } from "react";
 import { signInWithEmailAndPassword } from "firebase/auth";
 import { useLocation, useNavigate } from "react-router-dom";
-import { auth } from "../firebase";
+
+// pega tudo que puder do módulo firebase (pra suportar versões diferentes)
+import { auth, missing, firebaseError, isFirebaseReady } from "../firebase";
 
 import Shell from "../ui/Shell";
 import Card from "../ui/Card";
@@ -19,9 +22,38 @@ export default function Login() {
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState(null);
 
+  function firebaseNotReadyMessage() {
+    // tenta montar a mensagem mais útil possível
+    const miss = Array.isArray(missing) ? missing : [];
+    if (miss.length) {
+      return (
+        "Firebase não configurado localmente. Faltando: " +
+        miss.join(", ") +
+        ".\n" +
+        "Verifique seu arquivo .env.local e reinicie o dev server (Ctrl+C e npm run dev)."
+      );
+    }
+    if (firebaseError?.message) {
+      return firebaseError.message;
+    }
+    return (
+      "Firebase ainda não inicializou (auth nulo). " +
+      "Verifique o .env.local e reinicie o dev server (Ctrl+C e npm run dev)."
+    );
+  }
+
   async function onSubmit(e) {
     e.preventDefault();
     setToast(null);
+
+    // 🔒 blindagem: não deixa chamar login se auth não existir
+    const readyFlag = typeof isFirebaseReady === "boolean" ? isFirebaseReady : null;
+
+    if (!auth || readyFlag === false) {
+      setToast(firebaseNotReadyMessage());
+      return;
+    }
+
     setBusy(true);
     try {
       await signInWithEmailAndPassword(auth, email.trim(), pass);
@@ -33,13 +65,14 @@ export default function Login() {
     }
   }
 
+  const firebaseWarn =
+    (!auth || (typeof isFirebaseReady === "boolean" && !isFirebaseReady)) && (Array.isArray(missing) ? missing.length : 0) > 0;
+
   return (
     <Shell center>
       <Card style={{ width: "min(420px, 92vw)" }}>
         <h1 style={{ margin: 0, fontSize: 22 }}>VeroTasks — Escritório</h1>
-        <p style={{ marginTop: 8, opacity: 0.8 }}>
-          Login do painel (email e senha).
-        </p>
+        <p style={{ marginTop: 8, opacity: 0.8 }}>Login do painel (email e senha).</p>
 
         <form onSubmit={onSubmit} style={{ marginTop: 14, display: "grid", gap: 10 }}>
           <Input
@@ -66,6 +99,12 @@ export default function Login() {
             {busy ? "Entrando..." : "Entrar"}
           </Button>
         </form>
+
+        {firebaseWarn ? (
+          <Toast style={{ marginTop: 12 }}>
+            Firebase parece não estar configurado (ENV faltando). Confira o <b>.env.local</b> e reinicie o servidor.
+          </Toast>
+        ) : null}
 
         {toast ? <Toast style={{ marginTop: 12 }}>{toast}</Toast> : null}
       </Card>
