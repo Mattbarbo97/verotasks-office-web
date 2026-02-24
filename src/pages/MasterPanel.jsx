@@ -75,13 +75,192 @@ function scoreSuggestion(needle, text) {
   if (t.includes(n)) return 50;
   return 0;
 }
-function normalizePriority(p) {
-  const x = safeStr(p);
-  return x || "medium";
+function chunk(arr, size) {
+  const out = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
 }
-function normalizeStatus(s) {
-  const x = safeStr(s);
-  return x || "open";
+
+/* =========================
+   Normalização robusta (PT/EN/Telegram/Legacy)
+   - Evita "sumir" tarefas quando status vem diferente
+   ========================= */
+
+function makeResolver(allowed = []) {
+  const list = Array.isArray(allowed) ? allowed.map((x) => safeStr(x)) : [];
+  const setLower = new Set(list.map((x) => x.toLowerCase()));
+
+  function pickFirstExisting(candidates) {
+    for (const c of candidates) {
+      const v = safeStr(c);
+      if (!v) continue;
+      if (setLower.has(v.toLowerCase())) return v;
+    }
+    return "";
+  }
+
+  return { list, setLower, pickFirstExisting };
+}
+
+function normalizePriorityRaw(p) {
+  const s = toLower(p);
+  if (!s) return "";
+
+  const map = {
+    urgent: "urgent",
+    urgente: "urgent",
+
+    high: "high",
+    alta: "high",
+
+    medium: "medium",
+    media: "medium",
+    média: "medium",
+
+    low: "low",
+    baixa: "low",
+  };
+
+  // tenta direto
+  if (map[s]) return map[s];
+
+  // normaliza separadores
+  const s2 = s.replace(/\s+/g, "_").replace(/-+/g, "_");
+  if (map[s2]) return map[s2];
+
+  return s; // fallback
+}
+
+function normalizeStatusRaw(st) {
+  const s = toLower(st);
+  if (!s) return "";
+
+  // Canon PT (office legacy)
+  if (s === "aberta") return "open";
+  if (s === "pendente") return "pending";
+  if (s === "deu_ruim") return "blocked";
+  if (s === "deu ruim") return "blocked";
+  if (s === "feito") return "done";
+  if (s === "feito_detalhes") return "done_details";
+
+  // EN / enum / bot
+  const map = {
+    open: "open",
+    opened: "open",
+    new: "open",
+
+    pending: "pending",
+    waiting: "pending",
+    wait: "pending",
+    review: "pending",
+    in_review: "pending",
+    "in-review": "pending",
+
+    blocked: "blocked",
+    fail: "blocked",
+    failed: "blocked",
+    error: "blocked",
+    problem: "blocked",
+    problems: "blocked",
+    issue: "blocked",
+    issues: "blocked",
+    bad: "blocked",
+
+    done: "done",
+    ok: "done",
+    success: "done",
+    completed: "done",
+    complete: "done",
+    closed: "done",
+
+    done_details: "done_details",
+    done_detail: "done_details",
+    details: "done_details",
+    detail: "done_details",
+    detalhes: "done_details",
+    "feito (det.)": "done_details",
+    "feito(det.)": "done_details",
+  };
+
+  if (map[s]) return map[s];
+
+  const s2 = s.replace(/\s+/g, "_").replace(/-+/g, "_");
+  if (map[s2]) return map[s2];
+
+  return s; // fallback
+}
+
+function normalizePriorityToAllowed(p, allowedPriorities) {
+  const { pickFirstExisting, list } = makeResolver(allowedPriorities);
+  const raw = normalizePriorityRaw(p);
+
+  // tenta casar com o que o projeto já usa
+  const candidateOrder = [
+    raw,
+    // se o projeto usa PT
+    raw === "high" ? "alta" : "",
+    raw === "medium" ? "media" : "",
+    raw === "low" ? "baixa" : "",
+    raw === "urgent" ? "urgente" : "",
+    // se veio PT e o projeto usa EN
+    raw === "alta" ? "high" : "",
+    raw === "media" ? "medium" : "",
+    raw === "baixa" ? "low" : "",
+    raw === "urgente" ? "urgent" : "",
+    // defaults comuns
+    "medium",
+    "media",
+    "high",
+    "alta",
+    "low",
+    "baixa",
+    "urgent",
+    "urgente",
+  ].filter(Boolean);
+
+  const picked = pickFirstExisting(candidateOrder);
+  if (picked) return picked;
+
+  // fallback defensivo: se a lista existe, pega o primeiro, senão "medium"
+  return list[0] || "medium";
+}
+
+function normalizeStatusToAllowed(st, allowedStatuses) {
+  const { pickFirstExisting, list } = makeResolver(allowedStatuses);
+  const raw = normalizeStatusRaw(st);
+
+  const candidateOrder = [
+    raw,
+    // se o projeto usa PT
+    raw === "open" ? "aberta" : "",
+    raw === "pending" ? "pendente" : "",
+    raw === "blocked" ? "deu_ruim" : "",
+    raw === "done" ? "feito" : "",
+    raw === "done_details" ? "feito_detalhes" : "",
+    // se veio PT e o projeto usa EN
+    raw === "aberta" ? "open" : "",
+    raw === "pendente" ? "pending" : "",
+    raw === "deu_ruim" ? "blocked" : "",
+    raw === "feito" ? "done" : "",
+    raw === "feito_detalhes" ? "done_details" : "",
+    // defaults
+    "open",
+    "aberta",
+    "pending",
+    "pendente",
+    "blocked",
+    "deu_ruim",
+    "done",
+    "feito",
+    "done_details",
+    "feito_detalhes",
+  ].filter(Boolean);
+
+  const picked = pickFirstExisting(candidateOrder);
+  if (picked) return picked;
+
+  // fallback defensivo
+  return list[0] || "open";
 }
 
 /** Labels PT-BR “bonitos” */
@@ -93,25 +272,62 @@ const PRIO_PRETTY = {
   alta: "Alta",
   media: "Média",
   baixa: "Baixa",
+  urgente: "Urgente",
+  média: "Média",
 };
+
 const STATUS_PRETTY = {
   open: "Aberta",
   pending: "Pendente",
   blocked: "Deu ruim",
   done: "Feita",
+  done_details: "Feita (det.)",
   feita: "Feita",
   pendente: "Pendente",
   deu_ruim: "Deu ruim",
+  "deu ruim": "Deu ruim",
   feito: "Feita",
+  feito_detalhes: "Feita (det.)",
+  aberta: "Aberta",
 };
 
 function prioPretty(p) {
-  const k = normalizePriority(p);
-  return PRIO_PRETTY[k] || PRIORITY_LABEL?.[k] || k;
+  const k = safeStr(p);
+  return PRIO_PRETTY[k] || PRIORITY_LABEL?.[k] || k || "—";
 }
 function statusPretty(s) {
-  const k = normalizeStatus(s);
-  return STATUS_PRETTY[k] || STATUS_LABEL?.[k] || k;
+  const k = safeStr(s);
+  return STATUS_PRETTY[k] || STATUS_LABEL?.[k] || k || "—";
+}
+
+/* =========================
+   Office signal (canon)
+   ========================= */
+
+const OFFICE_SIGNAL = {
+  EM_ANDAMENTO: "em_andamento",
+  PRECISO_AJUDA: "preciso_ajuda",
+  APRESENTOU_PROBLEMAS: "apresentou_problemas",
+  TAREFA_EXECUTADA: "tarefa_executada",
+  COMENTARIO: "comentario",
+};
+
+function normalizeOfficeState(officeSignal) {
+  if (!officeSignal) return "";
+  if (typeof officeSignal === "string") return safeStr(officeSignal);
+  if (typeof officeSignal === "object" && officeSignal.state) return safeStr(officeSignal.state);
+  return "";
+}
+
+function signalLabel(sig) {
+  const s = safeStr(sig);
+  if (!s) return "—";
+  if (s === OFFICE_SIGNAL.EM_ANDAMENTO) return "Em andamento";
+  if (s === OFFICE_SIGNAL.PRECISO_AJUDA) return "Precisa de ajuda";
+  if (s === OFFICE_SIGNAL.APRESENTOU_PROBLEMAS) return "Apresentou problemas";
+  if (s === OFFICE_SIGNAL.TAREFA_EXECUTADA) return "Tarefa executada";
+  if (s === OFFICE_SIGNAL.COMENTARIO) return "Comentado";
+  return s.replace(/[_-]+/g, " ").trim() || "—";
 }
 
 function getOfficeComment(t) {
@@ -120,26 +336,24 @@ function getOfficeComment(t) {
   if (t?.officeSignal && typeof t.officeSignal === "object") return safeStr(t.officeSignal.comment);
   return "";
 }
-function getOfficeSignalLabel(t) {
-  const sig = t?.officeSignal;
-  if (!sig) return "";
-  if (typeof sig === "string") return sig;
-  if (typeof sig === "object" && sig.state) return safeStr(sig.state);
-  return "";
-}
+
 function officeTone(state) {
   const s = toLower(state);
   if (!s) return "neutral";
-  if (s.includes("execut") || s.includes("feito") || s.includes("ok")) return "ok";
-  if (s.includes("ruim") || s.includes("erro") || s.includes("bloq") || s.includes("blocked")) return "bad";
-  if (s.includes("pend") || s.includes("aguard")) return "warn";
+  if (
+    s.includes("tarefa_executada") ||
+    s.includes("execut") ||
+    s.includes("feito") ||
+    s.includes("ok")
+  )
+    return "ok";
+  if (s.includes("problema") || s.includes("ruim") || s.includes("erro") || s.includes("blocked"))
+    return "bad";
+  if (s.includes("pend") || s.includes("aguard") || s.includes("preciso"))
+    return "warn";
   return "neutral";
 }
-function officeLabel(state) {
-  const s = safeStr(state);
-  if (!s) return "";
-  return s.replace(/[_-]+/g, " ").trim();
-}
+
 function compactUserLabel(u) {
   const name = safeStr(u?.displayName || u?.name);
   if (name) return name;
@@ -148,34 +362,54 @@ function compactUserLabel(u) {
   const uid = safeStr(u?.uid || u?.id);
   return uid || "—";
 }
-function getTaskText(t) {
-  return `${safeStr(t.title)} ${safeStr(t.description)} ${safeStr(t.masterComment)} ${safeStr(
-    t.officeComment
-  )}`.trim();
+
+/* =========================
+   Texto defensivo da task (Master + Office legacy)
+   ========================= */
+
+function taskTitle(t) {
+  return (
+    safeStr(t?.title) ||
+    safeStr(t?.message) ||
+    safeStr(t?.description) ||
+    safeStr(t?.telegram?.rawText) ||
+    safeStr(t?.telegram?.text) ||
+    "—"
+  );
 }
-function chunk(arr, size) {
-  const out = [];
-  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
-  return out;
+function getTaskText(t) {
+  const parts = [
+    safeStr(t?.title),
+    safeStr(t?.message),
+    safeStr(t?.description),
+    safeStr(t?.masterComment),
+    safeStr(t?.officeComment),
+    t?.officeSignal && typeof t.officeSignal === "object" ? safeStr(t.officeSignal.comment) : "",
+    safeStr(t?.createdBy?.name),
+    safeStr(t?.telegram?.rawText),
+    safeStr(t?.telegram?.text),
+  ];
+  return parts.filter(Boolean).join(" ").trim();
 }
 
 /* =========================
-   UI atoms
+   UI atoms (melhorados)
    ========================= */
 
 function Pill({ children, tone = "neutral", title }) {
   const map = {
-    neutral: "border-white/10 bg-white/5 text-white/80",
-    ok: "border-emerald-400/20 bg-emerald-400/10 text-emerald-100",
-    warn: "border-amber-400/20 bg-amber-400/10 text-amber-100",
-    bad: "border-rose-400/20 bg-rose-400/10 text-rose-100",
-    indigo: "border-indigo-400/25 bg-indigo-400/10 text-indigo-100",
+    neutral: "border-white/12 bg-white/6 text-white/80",
+    ok: "border-emerald-400/25 bg-emerald-400/12 text-emerald-100",
+    warn: "border-amber-400/25 bg-amber-400/12 text-amber-100",
+    bad: "border-rose-400/25 bg-rose-400/12 text-rose-100",
+    indigo: "border-indigo-400/30 bg-indigo-400/12 text-indigo-100",
   };
   const cls = map[tone] || map.neutral;
   return (
     <span
       title={title}
-      className={`inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-full border ${cls}`}
+      className={`inline-flex items-center gap-1 text-[11px] px-2.5 py-1.5 rounded-full border ${cls}`}
+      style={{ lineHeight: 1.1 }}
     >
       {children}
     </span>
@@ -183,12 +417,23 @@ function Pill({ children, tone = "neutral", title }) {
 }
 
 function Divider({ my = 12 }) {
-  return <div style={{ height: 1, background: "rgba(255,255,255,0.08)", margin: `${my}px 0` }} />;
+  return <div style={{ height: 1, background: "rgba(255,255,255,0.10)", margin: `${my}px 0` }} />;
 }
 
+/**
+ * Row (card da tarefa) — aqui fica o “glass” menos transparente
+ * sem precisar mexer no Card.jsx do projeto inteiro.
+ */
 function Row({ children }) {
   return (
-    <div className="vero-glass border border-white/10 rounded-2xl" style={{ padding: 14 }}>
+    <div
+      className="vero-glass border border-white/12 rounded-2xl"
+      style={{
+        padding: 14,
+        background: "linear-gradient(180deg, rgba(0,0,0,0.42), rgba(0,0,0,0.26))",
+        boxShadow: "0 14px 38px rgba(0,0,0,0.45)",
+      }}
+    >
       {children}
     </div>
   );
@@ -202,8 +447,8 @@ function IconBtn({ children, style, ...props }) {
         height: 36,
         padding: "0 12px",
         borderRadius: 14,
-        border: "1px solid rgba(255,255,255,0.12)",
-        background: "rgba(255,255,255,0.05)",
+        border: "1px solid rgba(255,255,255,0.14)",
+        background: "rgba(255,255,255,0.06)",
         color: "#e5e7eb",
         cursor: props.disabled ? "not-allowed" : "pointer",
         fontSize: 12,
@@ -219,18 +464,18 @@ function IconBtn({ children, style, ...props }) {
 
 function SmallBox({ title, children, tone = "neutral" }) {
   const map = {
-    neutral: "border-white/10 bg-white/5",
-    ok: "border-emerald-400/20 bg-emerald-400/8",
-    warn: "border-amber-400/20 bg-amber-400/8",
-    bad: "border-rose-400/20 bg-rose-400/8",
-    indigo: "border-indigo-400/25 bg-indigo-400/8",
+    neutral: "border-white/12 bg-white/6",
+    ok: "border-emerald-400/22 bg-emerald-400/10",
+    warn: "border-amber-400/22 bg-amber-400/10",
+    bad: "border-rose-400/22 bg-rose-400/10",
+    indigo: "border-indigo-400/25 bg-indigo-400/10",
   };
   const cls = map[tone] || map.neutral;
 
   return (
-    <div className={`rounded-2xl border p-3 ${cls}`}>
-      {title ? <div className="text-xs font-semibold text-white/85 mb-2">{title}</div> : null}
-      <div className="text-xs text-white/75 whitespace-pre-wrap leading-relaxed">{children}</div>
+    <div className={`rounded-2xl border p-3 ${cls}`} style={{ boxShadow: "0 10px 26px rgba(0,0,0,0.22)" }}>
+      {title ? <div className="text-xs font-semibold text-white/88 mb-2">{title}</div> : null}
+      <div className="text-xs text-white/78 whitespace-pre-wrap leading-relaxed">{children}</div>
     </div>
   );
 }
@@ -241,16 +486,21 @@ function groupTone(key) {
   if (key === "pending") return "warn";
   return "indigo";
 }
-function statusGroupKey(st) {
-  const s = normalizeStatus(st);
-  if (s === "done" || s === "feito") return "done";
-  if (s === "blocked" || s === "deu_ruim") return "blocked";
+
+function statusGroupKey(st, allowedStatuses) {
+  const canon = normalizeStatusToAllowed(st, allowedStatuses);
+  const s = toLower(canon);
+
+  // mapeia "variantes" possíveis do seu projeto
+  if (s === "done" || s === "feito" || s === "done_details" || s === "feito_detalhes") return "done";
+  if (s === "blocked" || s === "deu_ruim" || s === "deu ruim") return "blocked";
   if (s === "pending" || s === "pendente") return "pending";
   return "open";
 }
+
 function groupTitle(key) {
   if (key === "done") return "Finalizadas";
-  if (key === "blocked") return "Problemas (deu ruim)";
+  if (key === "blocked") return "Problemas";
   if (key === "pending") return "Pendentes";
   return "Abertas";
 }
@@ -258,9 +508,11 @@ function groupTitle(key) {
 function SectionHeader({ title, subtitle, right }) {
   return (
     <div className="flex items-start justify-between gap-3 flex-wrap">
-      <div>
-        <div className="text-[15px] sm:text-[16px] font-extrabold text-white/90">{title}</div>
-        {subtitle ? <div className="text-xs text-white/60 mt-1">{subtitle}</div> : null}
+      <div style={{ minWidth: 0 }}>
+        <div className="text-[15px] sm:text-[16px] font-extrabold text-white/92" style={{ lineHeight: 1.2 }}>
+          {title}
+        </div>
+        {subtitle ? <div className="text-xs text-white/60 mt-1 leading-relaxed">{subtitle}</div> : null}
       </div>
       {right ? <div className="flex items-center gap-2 flex-wrap">{right}</div> : null}
     </div>
@@ -314,7 +566,7 @@ function ConfirmModal({
         position: "fixed",
         inset: 0,
         zIndex: 99999,
-        background: "rgba(0,0,0,0.66)",
+        background: "rgba(0,0,0,0.70)",
         display: "grid",
         placeItems: "center",
         padding: 16,
@@ -322,24 +574,27 @@ function ConfirmModal({
     >
       <div
         onMouseDown={(e) => e.stopPropagation()}
-        className="vero-glass border border-white/10 rounded-2xl w-full"
+        className="vero-glass border border-white/12 rounded-2xl w-full"
         style={{
           maxWidth: 720,
           padding: 16,
-          boxShadow: "0 20px 60px rgba(0,0,0,0.55)",
+          background: "linear-gradient(180deg, rgba(0,0,0,0.55), rgba(0,0,0,0.34))",
+          boxShadow: "0 24px 70px rgba(0,0,0,0.60)",
         }}
       >
         <div className="flex items-start justify-between gap-3">
           <div style={{ minWidth: 0 }}>
-            <div className="text-[14px] font-extrabold text-white/90">{title}</div>
-            {message ? <div className="text-xs text-white/70 mt-2 whitespace-pre-wrap">{message}</div> : null}
+            <div className="text-[14px] font-extrabold text-white/92">{title}</div>
+            {message ? (
+              <div className="text-xs text-white/72 mt-2 whitespace-pre-wrap leading-relaxed">{message}</div>
+            ) : null}
           </div>
 
           <button
             onClick={onClose}
             style={{
-              border: "1px solid rgba(255,255,255,0.12)",
-              background: "rgba(255,255,255,0.05)",
+              border: "1px solid rgba(255,255,255,0.14)",
+              background: "rgba(255,255,255,0.06)",
               color: "#e5e7eb",
               borderRadius: 12,
               height: 34,
@@ -415,6 +670,15 @@ export default function MasterPanel() {
   // UX
   const [createOpen, setCreateOpen] = useState(true);
   const [bulkOpen, setBulkOpen] = useState(false);
+  const [headerOpen, setHeaderOpen] = useState(false); // "Detalhes" do topo
+  const isDev = Boolean(import.meta?.env?.DEV);
+  const [showDebug, setShowDebug] = useState(() => {
+    try {
+      return localStorage.getItem("vt_master_debug") === "1";
+    } catch {
+      return false;
+    }
+  });
 
   // filtros
   const [qText, setQText] = useState("");
@@ -433,7 +697,7 @@ export default function MasterPanel() {
   // form criar
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
-  const [priority, setPriority] = useState("medium");
+  const [priority, setPriority] = useState(() => normalizePriorityToAllowed("medium", PRIORITIES));
   const [assigneeUid, setAssigneeUid] = useState("");
 
   // editor modal
@@ -441,9 +705,9 @@ export default function MasterPanel() {
   const [editTask, setEditTask] = useState(null);
   const [editTitle, setEditTitle] = useState("");
   const [editDescription, setEditDescription] = useState("");
-  const [editPriority, setEditPriority] = useState("medium");
+  const [editPriority, setEditPriority] = useState(() => normalizePriorityToAllowed("medium", PRIORITIES));
   const [editAssigneeUid, setEditAssigneeUid] = useState("");
-  const [editStatus, setEditStatus] = useState("open");
+  const [editStatus, setEditStatus] = useState(() => normalizeStatusToAllowed("open", TASK_STATUS));
 
   // toast
   const [toast, setToast] = useState({ open: false, kind: "info", title: "", message: "" });
@@ -453,7 +717,7 @@ export default function MasterPanel() {
   const [sugIdx, setSugIdx] = useState(-1);
   const qWrapRef = useRef(null);
 
-  // detalhes
+  // detalhes por task
   const [expanded, setExpanded] = useState(() => new Set());
 
   // seleção
@@ -468,6 +732,9 @@ export default function MasterPanel() {
   // visibilidade
   const [density, setDensity] = useState("compact");
   const [bigText, setBigText] = useState(false);
+
+  // menu de ações por tarefa
+  const [openMenuId, setOpenMenuId] = useState("");
 
   // confirm modal state
   const [confirm, setConfirm] = useState({
@@ -488,6 +755,12 @@ export default function MasterPanel() {
   useEffect(() => {
     console.log("[MasterPanel] mounted", { uid: user?.uid, email: user?.email, path: window?.location?.pathname });
   }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("vt_master_debug", showDebug ? "1" : "0");
+    } catch {}
+  }, [showDebug]);
 
   /* ---------- snapshots ---------- */
   useEffect(() => {
@@ -512,14 +785,6 @@ export default function MasterPanel() {
               .map((c) => `${c.type}:${c.doc.id}`)
               .join(" | ")
           : "";
-
-        if (resumo) {
-          console.log("[tasks snapshot] changes:", resumo, {
-            fromCache: snap.metadata.fromCache,
-            pending: snap.metadata.hasPendingWrites,
-            size: snap.size,
-          });
-        }
 
         setSnapInfo((s) => ({
           ...s,
@@ -549,7 +814,6 @@ export default function MasterPanel() {
     const offU = onSnapshot(
       qu,
       (snap) => {
-        console.log("[users snapshot] ok:", snap.size);
         setUsers(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
       },
       (err) => console.error("[users snapshot ERROR]", err)
@@ -561,6 +825,21 @@ export default function MasterPanel() {
       offU();
     };
   }, [uid]);
+
+  useEffect(() => {
+    function onDocClick(e) {
+      // fecha menu ao clicar fora
+      if (!openMenuId) return;
+      const el = e?.target;
+      if (!el) return;
+      // se clicar dentro de algo com data-vt-menu-root, não fecha
+      const inside = el.closest?.("[data-vt-menu-root='1']");
+      if (inside) return;
+      setOpenMenuId("");
+    }
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [openMenuId]);
 
   const userOptions = useMemo(() => {
     const rows = Array.isArray(users) ? users.slice() : [];
@@ -584,8 +863,8 @@ export default function MasterPanel() {
   const counts = useMemo(() => {
     const c = { open: 0, pending: 0, blocked: 0, done: 0, officePing: 0 };
     for (const t of tasks) {
-      c[statusGroupKey(t.status)]++;
-      if (getOfficeSignalLabel(t)) c.officePing++;
+      c[statusGroupKey(t.status, TASK_STATUS)]++;
+      if (normalizeOfficeState(t.officeSignal)) c.officePing++;
     }
     return c;
   }, [tasks]);
@@ -595,7 +874,7 @@ export default function MasterPanel() {
     const needle = safeStr(qText);
     if (!needle || needle.length < 2) return [];
 
-    const titles = tasks.map((t) => safeStr(t.title)).filter(Boolean);
+    const titles = tasks.map((t) => taskTitle(t)).filter(Boolean);
     const people = userOptions.map((u) => safeStr(u.label)).filter(Boolean);
 
     const words = [];
@@ -624,8 +903,18 @@ export default function MasterPanel() {
     const t = toLower(qText);
     let rows = Array.isArray(tasks) ? tasks.slice() : [];
 
-    if (statusFilter !== "all") rows = rows.filter((r) => normalizeStatus(r.status) === statusFilter);
-    if (prioFilter !== "all") rows = rows.filter((r) => normalizePriority(r.priority) === prioFilter);
+    if (statusFilter !== "all") {
+      rows = rows.filter(
+        (r) => normalizeStatusToAllowed(r.status, TASK_STATUS) === normalizeStatusToAllowed(statusFilter, TASK_STATUS)
+      );
+    }
+
+    if (prioFilter !== "all") {
+      rows = rows.filter(
+        (r) => normalizePriorityToAllowed(r.priority, PRIORITIES) === normalizePriorityToAllowed(prioFilter, PRIORITIES)
+      );
+    }
+
     if (t) rows = rows.filter((r) => toLower(getTaskText(r)).includes(t));
 
     if (sort === "recent") {
@@ -633,8 +922,23 @@ export default function MasterPanel() {
     } else if (sort === "old") {
       rows.sort((a, b) => (a.createdAt?.seconds || 0) - (b.createdAt?.seconds || 0));
     } else if (sort === "priority") {
-      const w = { urgent: 5, high: 4, medium: 3, low: 2, alta: 5, media: 3, baixa: 2 };
-      rows.sort((a, b) => (w[normalizePriority(b.priority)] || 3) - (w[normalizePriority(a.priority)] || 3));
+      // ranking defensivo (EN/PT)
+      const w = {
+        urgent: 5,
+        urgente: 5,
+        high: 4,
+        alta: 4,
+        medium: 3,
+        media: 3,
+        "média": 3,
+        low: 2,
+        baixa: 2,
+      };
+      rows.sort((a, b) => {
+        const ap = normalizePriorityToAllowed(a.priority, PRIORITIES);
+        const bp = normalizePriorityToAllowed(b.priority, PRIORITIES);
+        return (w[toLower(bp)] || 3) - (w[toLower(ap)] || 3);
+      });
     }
 
     return rows;
@@ -662,7 +966,7 @@ export default function MasterPanel() {
   const groupsInPage = useMemo(() => {
     const map = { open: [], pending: [], blocked: [], done: [] };
     for (const t of paged) {
-      const g = statusGroupKey(t.status);
+      const g = statusGroupKey(t.status, TASK_STATUS);
       map[g].push(t);
     }
     return map;
@@ -725,12 +1029,11 @@ export default function MasterPanel() {
     }
 
     try {
-      console.log("[create] START", { uid, title: t, assigneeUid });
       await addDoc(collection(db, "tasks"), {
         title: t,
         description: description.trim(),
-        status: "open",
-        priority,
+        status: normalizeStatusToAllowed("open", TASK_STATUS),
+        priority: normalizePriorityToAllowed(priority, PRIORITIES),
         assigneeUid: assigneeUid || "",
         createdByUid: uid || "",
         createdAt: serverTimestamp(),
@@ -744,11 +1047,10 @@ export default function MasterPanel() {
 
       setTitle("");
       setDescription("");
-      setPriority("medium");
+      setPriority(normalizePriorityToAllowed("medium", PRIORITIES));
       setAssigneeUid("");
       setToast({ open: true, kind: "ok", title: "Criado", message: "Tarefa criada com sucesso." });
       setCreateOpen(false);
-      console.log("[create] OK");
     } catch (err) {
       console.error("[create] ERROR", err);
       setToast({ open: true, kind: "error", title: "Erro", message: err?.message || "Falha ao criar tarefa." });
@@ -757,8 +1059,16 @@ export default function MasterPanel() {
 
   async function quickUpdate(taskId, patch) {
     try {
-      console.log("[update] patch", { taskId, patch });
-      await updateDoc(doc(db, "tasks", taskId), { ...patch, updatedAt: serverTimestamp() });
+      const safePatch = { ...patch };
+
+      if (Object.prototype.hasOwnProperty.call(safePatch, "status")) {
+        safePatch.status = normalizeStatusToAllowed(safePatch.status, TASK_STATUS);
+      }
+      if (Object.prototype.hasOwnProperty.call(safePatch, "priority")) {
+        safePatch.priority = normalizePriorityToAllowed(safePatch.priority, PRIORITIES);
+      }
+
+      await updateDoc(doc(db, "tasks", taskId), { ...safePatch, updatedAt: serverTimestamp() });
     } catch (err) {
       console.error("[update] ERROR", err);
       setToast({ open: true, kind: "error", title: "Erro", message: err?.message || "Falha ao atualizar." });
@@ -767,11 +1077,11 @@ export default function MasterPanel() {
 
   function openEdit(t) {
     setEditTask(t);
-    setEditTitle(safeStr(t.title));
+    setEditTitle(taskTitle(t));
     setEditDescription(safeStr(t.description));
-    setEditPriority(normalizePriority(t.priority));
+    setEditPriority(normalizePriorityToAllowed(t.priority, PRIORITIES));
     setEditAssigneeUid(safeStr(t.assigneeUid));
-    setEditStatus(normalizeStatus(t.status));
+    setEditStatus(normalizeStatusToAllowed(t.status, TASK_STATUS));
     setEditOpen(true);
   }
   function closeEdit() {
@@ -789,13 +1099,12 @@ export default function MasterPanel() {
     }
 
     try {
-      console.log("[edit] SAVE", { id: editTask.id });
       await updateDoc(doc(db, "tasks", editTask.id), {
         title: t,
         description: editDescription.trim(),
-        priority: normalizePriority(editPriority),
+        priority: normalizePriorityToAllowed(editPriority, PRIORITIES),
         assigneeUid: safeStr(editAssigneeUid),
-        status: normalizeStatus(editStatus),
+        status: normalizeStatusToAllowed(editStatus, TASK_STATUS),
         updatedAt: serverTimestamp(),
       });
 
@@ -841,7 +1150,7 @@ export default function MasterPanel() {
       title: "Confirmar exclusão",
       message:
         `Tem certeza que deseja excluir esta tarefa?\n\n` +
-        `"${safeStr(t.title) || "—"}"\n` +
+        `"${taskTitle(t) || "—"}"\n` +
         `ID: ${t.id}\n\n` +
         `Isso não tem volta.`,
       confirmLabel: "Excluir agora",
@@ -857,10 +1166,7 @@ export default function MasterPanel() {
 
     setConfirm((c) => ({ ...c, busy: true }));
     try {
-      console.log("[delete] START", { id: t.id, title: safeStr(t.title), uid, email: user?.email });
-
       await deleteDoc(doc(db, "tasks", t.id));
-      console.log("[delete] deleteDoc resolved", t.id);
 
       setSelected((prev) => {
         const n = new Set(prev);
@@ -874,7 +1180,6 @@ export default function MasterPanel() {
       });
 
       await assertDeletedOnServer(t.id);
-      console.log("[delete] CONFIRMED on server", t.id);
 
       setToast({ open: true, kind: "ok", title: "Excluída", message: "Tarefa removida (confirmado no servidor)." });
       closeConfirm();
@@ -925,7 +1230,6 @@ export default function MasterPanel() {
     setBulkBusy(true);
 
     const ids = selectedIds.slice();
-    console.log("[bulkDelete] START", { count: ids.length, ids: ids.slice(0, 12) });
 
     try {
       const parts = chunk(ids, 450);
@@ -933,15 +1237,13 @@ export default function MasterPanel() {
         const batch = writeBatch(db);
         for (const id of part) batch.delete(doc(db, "tasks", id));
         await batch.commit();
-        console.log("[bulkDelete] batch committed", { size: part.length });
       }
 
-      // valida 1 id no servidor (amostra) pra garantir que não está “sumindo e voltando”
+      // valida 1 id no servidor (amostra)
       const sample = ids[0];
       if (sample) {
         try {
           await assertDeletedOnServer(sample);
-          console.log("[bulkDelete] server confirm OK", sample);
         } catch (e) {
           console.warn("[bulkDelete] server confirm FAIL", e);
         }
@@ -1019,8 +1321,8 @@ export default function MasterPanel() {
     }
 
     const patch = {};
-    if (bulkStatus) patch.status = bulkStatus;
-    if (bulkPrio) patch.priority = bulkPrio;
+    if (bulkStatus) patch.status = normalizeStatusToAllowed(bulkStatus, TASK_STATUS);
+    if (bulkPrio) patch.priority = normalizePriorityToAllowed(bulkPrio, PRIORITIES);
     if (bulkAssignee !== "") patch.assigneeUid = bulkAssignee === "__CLEAR__" ? "" : bulkAssignee;
 
     const keys = Object.keys(patch);
@@ -1034,9 +1336,7 @@ export default function MasterPanel() {
       return;
     }
 
-    // Sem window.confirm — aplica direto com toast (padrão SaaS)
     setBulkBusy(true);
-    console.log("[bulkApply] START", { selectedCount, patch });
 
     try {
       const ids = selectedIds.slice();
@@ -1046,7 +1346,6 @@ export default function MasterPanel() {
         const batch = writeBatch(db);
         for (const id of part) batch.update(doc(db, "tasks", id), { ...patch, updatedAt: serverTimestamp() });
         await batch.commit();
-        console.log("[bulkApply] batch committed", { size: part.length });
       }
 
       setToast({ open: true, kind: "ok", title: "Aplicado", message: `Atualizado em ${selectedCount} tarefa(s).` });
@@ -1068,11 +1367,14 @@ export default function MasterPanel() {
 
   const pad = density === "compact" ? 12 : 16;
   const titleSize = bigText ? 16 : 14;
-  const selectH = density === "compact" ? 40 : 42;
 
-  const handleEscClose = useCallback((e) => {
-    if (e.key === "Escape") closeEdit();
-  }, []);
+  const handleEscClose = useCallback(
+    (e) => {
+      if (e.key === "Escape") closeEdit();
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    []
+  );
 
   useEffect(() => {
     if (!editOpen) return;
@@ -1080,39 +1382,144 @@ export default function MasterPanel() {
     return () => window.removeEventListener("keydown", handleEscClose);
   }, [editOpen, handleEscClose]);
 
+  function TaskMenu({ t }) {
+    const pr = normalizePriorityToAllowed(t.priority, PRIORITIES);
+    const st = normalizeStatusToAllowed(t.status, TASK_STATUS);
+
+    const menuBtnStyle = {
+      width: "100%",
+      textAlign: "left",
+      padding: "10px 10px",
+      fontSize: 12,
+      fontWeight: 900,
+      color: "rgba(255,255,255,0.88)",
+      background: "transparent",
+      border: "none",
+      cursor: "pointer",
+      lineHeight: 1.2,
+    };
+
+    function act(fn) {
+      try {
+        fn?.();
+      } finally {
+        setOpenMenuId("");
+      }
+    }
+
+    const stOpen = normalizeStatusToAllowed("open", TASK_STATUS);
+    const stPending = normalizeStatusToAllowed("pending", TASK_STATUS);
+    const stBlocked = normalizeStatusToAllowed("blocked", TASK_STATUS);
+    const stDone = normalizeStatusToAllowed("done", TASK_STATUS);
+
+    return (
+      <div
+        data-vt-menu-root="1"
+        className="vero-glass border border-white/12 rounded-2xl overflow-hidden"
+        style={{
+          position: "absolute",
+          top: 40,
+          right: 0,
+          width: 240,
+          zIndex: 60,
+          background: "linear-gradient(180deg, rgba(0,0,0,0.55), rgba(0,0,0,0.38))",
+          boxShadow: "0 22px 62px rgba(0,0,0,0.60)",
+        }}
+      >
+        <div style={{ padding: 10 }}>
+          <div className="text-[11px] text-white/60 leading-relaxed">
+            ID: <code className="text-white/80">{t.id}</code>
+          </div>
+        </div>
+        <div style={{ height: 1, background: "rgba(255,255,255,0.10)" }} />
+
+        <button style={menuBtnStyle} onClick={() => act(() => openEdit(t))}>
+          ✏️ Editar
+        </button>
+        <button style={menuBtnStyle} onClick={() => act(() => requestDeleteSingle(t))}>
+          🗑️ Excluir
+        </button>
+
+        <div style={{ height: 1, background: "rgba(255,255,255,0.10)" }} />
+
+        <div style={{ padding: 10 }} className="text-[11px] text-white/65 font-extrabold">
+          Status rápido
+        </div>
+        <button style={menuBtnStyle} onClick={() => act(() => (st === stOpen ? null : quickUpdate(t.id, { status: stOpen })))}>
+          📌 Marcar como Aberta
+        </button>
+        <button style={menuBtnStyle} onClick={() => act(() => (st === stPending ? null : quickUpdate(t.id, { status: stPending })))}>
+          ⏳ Marcar como Pendente
+        </button>
+        <button style={menuBtnStyle} onClick={() => act(() => (st === stBlocked ? null : quickUpdate(t.id, { status: stBlocked })))}>
+          🟥 Marcar como Deu ruim
+        </button>
+        <button style={menuBtnStyle} onClick={() => act(() => (st === stDone ? null : quickUpdate(t.id, { status: stDone })))}>
+          ✅ Marcar como Feita
+        </button>
+
+        <div style={{ height: 1, background: "rgba(255,255,255,0.10)" }} />
+
+        <div style={{ padding: 10 }} className="text-[11px] text-white/65 font-extrabold">
+          Prioridade rápida
+        </div>
+        {PRIORITIES.map((p) => {
+          const norm = normalizePriorityToAllowed(p, PRIORITIES);
+          return (
+            <button
+              key={p}
+              style={menuBtnStyle}
+              onClick={() => act(() => (toLower(pr) === toLower(norm) ? null : quickUpdate(t.id, { priority: norm })))}
+            >
+              ⚡ {prioPretty(norm)}
+            </button>
+          );
+        })}
+      </div>
+    );
+  }
+
   function TaskRow({ t }) {
-    const pr = normalizePriority(t.priority);
-    const st = normalizeStatus(t.status);
+    const pr = normalizePriorityToAllowed(t.priority, PRIORITIES);
+    const st = normalizeStatusToAllowed(t.status, TASK_STATUS);
 
     const assignee = t.assigneeUid ? userByUid.get(t.assigneeUid)?.label || t.assigneeUid : "";
     const officeComment = getOfficeComment(t);
-    const officeStateRaw = getOfficeSignalLabel(t);
-    const officeState = officeLabel(officeStateRaw);
+    const officeStateRaw = normalizeOfficeState(t.officeSignal);
+    const officeState = signalLabel(officeStateRaw);
 
     const statusTone =
-      st === "done" || st === "feito"
+      toLower(st) === toLower(normalizeStatusToAllowed("done", TASK_STATUS)) ||
+      toLower(st) === "feito" ||
+      toLower(st) === "feito_detalhes" ||
+      toLower(st) === "done_details"
         ? "ok"
-        : st === "blocked" || st === "deu_ruim"
+        : toLower(st) === toLower(normalizeStatusToAllowed("blocked", TASK_STATUS)) ||
+          toLower(st) === "deu_ruim" ||
+          toLower(st) === "deu ruim"
         ? "bad"
-        : st === "pending" || st === "pendente"
+        : toLower(st) === toLower(normalizeStatusToAllowed("pending", TASK_STATUS)) || toLower(st) === "pendente"
         ? "warn"
         : "neutral";
 
     const hasDetails = Boolean(safeStr(t.description) || officeComment || officeStateRaw);
     const isOpen = expanded.has(t.id);
     const isSel = selected.has(t.id);
+    const menuOpen = openMenuId === t.id;
+
+    const metaDot = <span className="text-white/30">•</span>;
 
     return (
       <Row>
         <div className="grid gap-3">
           {/* Header */}
           <div className="flex items-start justify-between gap-3 flex-wrap">
-            <div style={{ display: "flex", gap: 12, alignItems: "start", minWidth: 280, flex: 1 }}>
+            <div style={{ display: "flex", gap: 10, alignItems: "flex-start", minWidth: 260, flex: 1 }}>
               <input
                 type="checkbox"
                 checked={isSel}
                 onChange={() => toggleSelect(t.id)}
-                style={{ marginTop: 5, transform: "scale(1.07)" }}
+                style={{ marginTop: 5, transform: "scale(1.05)" }}
                 aria-label="Selecionar tarefa"
               />
 
@@ -1121,34 +1528,38 @@ export default function MasterPanel() {
                   style={{
                     fontSize: titleSize,
                     fontWeight: 950,
-                    color: "rgba(255,255,255,0.92)",
-                    lineHeight: 1.15,
+                    color: "rgba(255,255,255,0.94)",
+                    lineHeight: 1.25,
                     letterSpacing: -0.2,
                   }}
+                  title={taskTitle(t)}
                 >
-                  {safeStr(t.title) || "—"}
+                  {taskTitle(t)}
                 </div>
 
-                <div className="mt-2 text-xs text-white/65 flex flex-wrap gap-x-3 gap-y-1">
+                <div className="mt-2 text-[12px] text-white/62 flex flex-wrap gap-x-2 gap-y-1" style={{ lineHeight: 1.35 }}>
                   <span>
-                    Resp.: <b className="text-white/85">{assignee || "— não atribuído —"}</b>
+                    Resp.: <b className="text-white/82">{assignee || "—"}</b>
                   </span>
+                  {metaDot}
                   <span>
-                    Criada: <b className="text-white/75">{fmtTS(t.createdAt)}</b>
+                    Criada: <b className="text-white/72">{fmtTS(t.createdAt)}</b>
                   </span>
+                  {metaDot}
                   <span>
-                    Atual.: <b className="text-white/75">{fmtTS(t.updatedAt)}</b>
+                    Atual.: <b className="text-white/72">{fmtTS(t.updatedAt)}</b>
                   </span>
                 </div>
               </div>
             </div>
 
-            <div className="flex items-center gap-2 flex-wrap">
+            <div className="flex items-center gap-2 flex-wrap" style={{ rowGap: 8 }}>
               <span
-                className={`inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-full border ${
-                  PRIORITY_BADGE?.[pr] || "border-white/10 bg-white/5"
+                className={`inline-flex items-center gap-1 text-[11px] px-2.5 py-1.5 rounded-full border ${
+                  PRIORITY_BADGE?.[pr] || "border-white/12 bg-white/6"
                 }`}
                 title="Prioridade"
+                style={{ lineHeight: 1.1 }}
               >
                 <span aria-hidden>⚡</span> {prioPretty(pr)}
               </span>
@@ -1159,7 +1570,7 @@ export default function MasterPanel() {
 
               {officeStateRaw ? (
                 <Pill tone={officeTone(officeStateRaw)} title={`Resposta do Office: ${officeState}`}>
-                  <span aria-hidden>📩</span> Office: {officeState}
+                  <span aria-hidden>📩</span> {officeState}
                 </Pill>
               ) : (
                 <Pill tone="neutral" title="Sem resposta do Office">
@@ -1169,103 +1580,52 @@ export default function MasterPanel() {
             </div>
           </div>
 
-          {/* Controls */}
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-2">
-            <div className="lg:col-span-3">
-              <Select
-                label="Prioridade"
-                value={pr}
-                onChange={(e) => quickUpdate(t.id, { priority: e.target.value })}
-                style={{ height: selectH }}
-              >
-                {PRIORITIES.map((p) => (
-                  <option key={p} value={p}>
-                    {prioPretty(p)}
-                  </option>
-                ))}
-              </Select>
-            </div>
-
-            <div className="lg:col-span-4">
-              <Select
-                label="Responsável"
-                value={safeStr(t.assigneeUid)}
-                onChange={(e) => quickUpdate(t.id, { assigneeUid: e.target.value })}
-                style={{ height: selectH }}
-              >
-                <option value="">— não atribuído —</option>
-                {userOptions.map((u) => (
-                  <option key={u.uid} value={u.uid}>
-                    {u.label}
-                  </option>
-                ))}
-              </Select>
-            </div>
-
-            <div className="lg:col-span-3">
-              <Select
-                label="Status"
-                value={st}
-                onChange={(e) => quickUpdate(t.id, { status: e.target.value })}
-                style={{ height: selectH }}
-              >
-                {TASK_STATUS.map((s) => (
-                  <option key={s} value={s}>
-                    {statusPretty(s)}
-                  </option>
-                ))}
-              </Select>
-            </div>
-
-            <div className="lg:col-span-2 flex items-end justify-end gap-2 flex-wrap">
+          {/* Ações */}
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <div className="flex items-center gap-2 flex-wrap">
               {hasDetails ? (
-                <Button tone="ghost" onClick={() => toggleExpand(t.id)} style={{ height: 40, width: "100%" }}>
+                <Button tone="ghost" onClick={() => toggleExpand(t.id)} style={{ height: 38 }}>
                   {isOpen ? "▾ Detalhes" : "▸ Detalhes"}
                 </Button>
               ) : (
-                <div className="w-full" />
+                <Button tone="ghost" disabled style={{ height: 38, opacity: 0.55 }}>
+                  ▸ Detalhes
+                </Button>
               )}
-            </div>
-          </div>
 
-          {/* Action bar (mais visível) */}
-          <div
-            className="rounded-2xl border border-white/10"
-            style={{
-              padding: 12,
-              background: "linear-gradient(90deg, rgba(99,102,241,0.12), rgba(0,0,0,0.18))",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: 12,
-              flexWrap: "wrap",
-            }}
-          >
-            <div className="flex items-center gap-2 flex-wrap">
-              <Button tone="ghost" onClick={() => openEdit(t)} style={{ height: 40 }}>
+              <Button tone="ghost" onClick={() => openEdit(t)} style={{ height: 38 }}>
                 ✏️ Editar
               </Button>
 
-              <Button tone="bad" onClick={() => requestDeleteSingle(t)} style={{ height: 40 }}>
-                🗑️ Excluir
-              </Button>
-
-              {officeComment ? (
-                <Pill tone="neutral" title="Comentário do Office (prévia)">
-                  <span aria-hidden>💬</span>{" "}
-                  {officeComment.length > 52 ? officeComment.slice(0, 52) + "…" : officeComment}
-                </Pill>
-              ) : null}
+              {/* menu */}
+              <div style={{ position: "relative" }} data-vt-menu-root="1">
+                <Button
+                  tone="ghost"
+                  onClick={() => setOpenMenuId((cur) => (cur === t.id ? "" : t.id))}
+                  style={{ height: 38, paddingLeft: 12, paddingRight: 12 }}
+                  title="Mais ações"
+                >
+                  ⋯
+                </Button>
+                {menuOpen ? <TaskMenu t={t} /> : null}
+              </div>
             </div>
 
-            <span className="text-[11px] text-white/55">
+            <span className="text-[11px] text-white/45" style={{ lineHeight: 1.2 }}>
               ID: <code style={{ opacity: 0.9 }}>{t.id}</code>
             </span>
           </div>
 
           {/* Details */}
           {hasDetails && isOpen ? (
-            <div style={{ padding: pad, borderRadius: 18, background: "rgba(0,0,0,0.18)" }}>
+            <div
+              style={{
+                padding: pad,
+                borderRadius: 18,
+                background: "rgba(255,255,255,0.04)",
+                border: "1px solid rgba(255,255,255,0.10)",
+              }}
+            >
               <div className="grid gap-2">
                 {safeStr(t.description) ? (
                   <SmallBox title="Descrição">{safeStr(t.description)}</SmallBox>
@@ -1278,19 +1638,19 @@ export default function MasterPanel() {
                 {officeStateRaw ? (
                   <SmallBox title="Resposta do Office" tone={officeTone(officeStateRaw)}>
                     <div className="flex items-center justify-between gap-2 flex-wrap">
-                      <div>
-                        <b className="text-white/85">{officeLabel(officeStateRaw) || "—"}</b>
+                      <div style={{ lineHeight: 1.35 }}>
+                        <b className="text-white/88">{officeState || "—"}</b>
                         {t?.officeSignaledAt ? (
-                          <span className="text-white/60"> · {fmtTS(t.officeSignaledAt)}</span>
+                          <span className="text-white/60"> {" • "} {fmtTS(t.officeSignaledAt)}</span>
                         ) : null}
                       </div>
                       <Pill tone={officeTone(officeStateRaw)}>{officeTone(officeStateRaw).toUpperCase()}</Pill>
                     </div>
 
                     {officeComment ? (
-                      <div className="mt-2 text-white/80 whitespace-pre-wrap">{officeComment}</div>
+                      <div className="mt-2 text-white/82 whitespace-pre-wrap leading-relaxed">{officeComment}</div>
                     ) : (
-                      <div className="mt-2 text-white/55">Sem comentário.</div>
+                      <div className="mt-2 text-white/60 leading-relaxed">Sem comentário.</div>
                     )}
                   </SmallBox>
                 ) : (
@@ -1316,7 +1676,7 @@ export default function MasterPanel() {
       {selectedCount > 0 ? (
         <div className="fixed left-0 right-0 bottom-3 z-50" style={{ paddingLeft: 12, paddingRight: 12 }}>
           <div
-            className="vero-glass border border-white/10 rounded-2xl"
+            className="vero-glass border border-white/12 rounded-2xl"
             style={{
               maxWidth: 1100,
               margin: "0 auto",
@@ -1326,19 +1686,20 @@ export default function MasterPanel() {
               justifyContent: "space-between",
               gap: 10,
               flexWrap: "wrap",
-              boxShadow: "0 18px 40px rgba(0,0,0,0.45)",
+              background: "linear-gradient(180deg, rgba(0,0,0,0.55), rgba(0,0,0,0.32))",
+              boxShadow: "0 18px 44px rgba(0,0,0,0.55)",
             }}
           >
             <div className="flex items-center gap-2 flex-wrap">
               <Pill tone="warn" title="Tarefas selecionadas">
                 ☑ Selecionadas: {selectedCount}
               </Pill>
-              <span className="text-xs text-white/60">Dica: selecione mais marcando as caixas à esquerda.</span>
+              <span className="text-xs text-white/60 leading-relaxed">Use “Ações em massa” ou exclua.</span>
             </div>
 
             <div className="flex items-center gap-2 flex-wrap">
               <Button tone="ghost" onClick={clearSelection} disabled={bulkBusy}>
-                Limpar seleção
+                Limpar
               </Button>
 
               <Button
@@ -1350,11 +1711,11 @@ export default function MasterPanel() {
                 }}
                 disabled={bulkBusy}
               >
-                Ajustar em massa
+                Ações em massa
               </Button>
 
               <Button tone="bad" onClick={requestBulkDelete} disabled={bulkBusy}>
-                🗑️ Excluir selecionadas
+                🗑️ Excluir
               </Button>
             </div>
           </div>
@@ -1362,48 +1723,30 @@ export default function MasterPanel() {
       ) : null}
 
       <div style={{ padding: "12px 0 92px" }} className="grid gap-4">
-        {/* VISÃO RÁPIDA */}
+        {/* HEADER */}
         <div className="sticky top-2 z-30" style={{ backdropFilter: "blur(12px)", paddingTop: 6, paddingBottom: 6 }}>
           <Card>
             <SectionHeader
-              title="Visão rápida"
-              subtitle="Fluxo: Master cria/atribui → Office sinaliza → Master decide status final."
+              title="Master"
+              subtitle={null}
               right={
                 <>
-                  <Pill tone="indigo">📌 Total: {tasks.length}</Pill>
-                  <Pill tone="indigo">🟦 Abertas: {counts.open}</Pill>
-                  <Pill tone="warn">🟨 Pendentes: {counts.pending}</Pill>
-                  <Pill tone="bad">🟥 Problemas: {counts.blocked}</Pill>
-                  <Pill tone="ok">✅ Finalizadas: {counts.done}</Pill>
-                  <Pill tone="neutral">📩 Office: {counts.officePing}</Pill>
+                  <Pill tone="indigo">Total: {tasks.length}</Pill>
+                  <Pill tone="indigo">Abertas: {counts.open}</Pill>
+                  <Pill tone="warn">Pendentes: {counts.pending}</Pill>
+                  <Pill tone="bad">Problemas: {counts.blocked}</Pill>
+                  <Pill tone="ok">Finalizadas: {counts.done}</Pill>
+                  <Pill tone="neutral">Office: {counts.officePing}</Pill>
 
-                  <Pill tone={snapInfo.fromCache ? "warn" : "ok"} title="Snapshot metadata">
-                    {snapInfo.fromCache ? "📦 cache" : "🌐 server"} {snapInfo.hasPendingWrites ? "· ✍ pending" : ""} ·{" "}
-                    {snapInfo.size}
+                  <Pill tone={snapInfo.fromCache ? "warn" : "ok"} title="Origem do snapshot">
+                    {snapInfo.fromCache ? "cache" : "server"}
+                    {snapInfo.hasPendingWrites ? " · pending" : ""} · {snapInfo.size}
                   </Pill>
                 </>
               }
             />
 
-            {snapInfo.lastErr ? (
-              <div className="mt-3">
-                <SmallBox title="DEBUG: último erro do listener (tasks)" tone="bad">
-                  {snapInfo.lastErr}
-                </SmallBox>
-              </div>
-            ) : null}
-
-            {snapInfo.lastEvent ? (
-              <div className="mt-3">
-                <SmallBox title="DEBUG: últimas mudanças do snapshot" tone="neutral">
-                  {snapInfo.lastEvent}
-                </SmallBox>
-              </div>
-            ) : null}
-
-            <Divider my={12} />
-
-            <div className="flex items-center gap-2 flex-wrap">
+            <div className="flex items-center gap-2 flex-wrap mt-3">
               <Button tone="ghost" onClick={() => setCreateOpen((v) => !v)} style={{ height: 40 }}>
                 {createOpen ? "▾ Nova tarefa" : "▸ Nova tarefa"}
               </Button>
@@ -1412,11 +1755,50 @@ export default function MasterPanel() {
                 {bulkOpen ? "▾ Ações em massa" : "▸ Ações em massa"}
               </Button>
 
-              <span className="ml-auto text-xs text-white/55">
+              <Button tone="ghost" onClick={() => setHeaderOpen((v) => !v)} style={{ height: 40 }}>
+                {headerOpen ? "▾ Detalhes" : "▸ Detalhes"}
+              </Button>
+
+              {isDev ? (
+                <Button
+                  tone="ghost"
+                  onClick={() => setShowDebug((v) => !v)}
+                  style={{ height: 40, opacity: showDebug ? 1 : 0.75 }}
+                  title="Debug (somente DEV)"
+                >
+                  {showDebug ? "🐞 Debug ON" : "🐞 Debug"}
+                </Button>
+              ) : null}
+
+              <span className="ml-auto text-xs text-white/55 leading-relaxed">
                 Página <b className="text-white/80">{page}</b> / <b className="text-white/80">{pageCount}</b> · Visíveis{" "}
                 <b className="text-white/80">{filtered.length}</b>
               </span>
             </div>
+
+            {headerOpen ? (
+              <div className="mt-3">
+                <SmallBox title="Fluxo" tone="neutral">
+                  Master cria/atribui → Office sinaliza → Master decide status final.
+                </SmallBox>
+              </div>
+            ) : null}
+
+            {isDev && showDebug ? (
+              <div className="mt-3 grid gap-2">
+                {snapInfo.lastErr ? (
+                  <SmallBox title="DEBUG: último erro do listener (tasks)" tone="bad">
+                    {snapInfo.lastErr}
+                  </SmallBox>
+                ) : null}
+
+                {snapInfo.lastEvent ? (
+                  <SmallBox title="DEBUG: últimas mudanças do snapshot" tone="neutral">
+                    {snapInfo.lastEvent}
+                  </SmallBox>
+                ) : null}
+              </div>
+            ) : null}
           </Card>
         </div>
 
@@ -1443,22 +1825,28 @@ export default function MasterPanel() {
                     minHeight: 120,
                     padding: 12,
                     borderRadius: 16,
-                    border: "1px solid rgba(255,255,255,0.12)",
-                    background: "rgba(0,0,0,0.28)",
-                    color: "rgba(255,255,255,0.90)",
+                    border: "1px solid rgba(255,255,255,0.14)",
+                    background: "rgba(0,0,0,0.34)",
+                    color: "rgba(255,255,255,0.92)",
                     outline: "none",
+                    lineHeight: 1.45,
                   }}
                 />
-                <div className="text-[11px] text-white/45 mt-1">Dica: inclua “como testar” para o Office validar rápido.</div>
+                <div className="text-[11px] text-white/50 mt-1 leading-relaxed">
+                  Dica: inclua “como testar” para o Office validar rápido.
+                </div>
               </label>
 
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <Select label="Prioridade" value={priority} onChange={(e) => setPriority(e.target.value)}>
-                  {PRIORITIES.map((p) => (
-                    <option key={p} value={p}>
-                      {prioPretty(p)}
-                    </option>
-                  ))}
+                  {PRIORITIES.map((p) => {
+                    const v = normalizePriorityToAllowed(p, PRIORITIES);
+                    return (
+                      <option key={p} value={v}>
+                        {prioPretty(v)}
+                      </option>
+                    );
+                  })}
                 </Select>
 
                 <Select label="Responsável" value={assigneeUid} onChange={(e) => setAssigneeUid(e.target.value)}>
@@ -1482,10 +1870,10 @@ export default function MasterPanel() {
         <Card>
           <SectionHeader
             title="Tarefas"
-            subtitle="Para excluir várias: marque as caixas → clique “Excluir selecionadas” (barra no rodapé)."
+            subtitle={null}
             right={
               <>
-                <Pill tone="neutral">Visíveis: {filtered.length}</Pill>
+                <Pill tone="neutral">Filtradas: {filtered.length}</Pill>
                 {selectedCount ? <Pill tone="warn">Selecionadas: {selectedCount}</Pill> : null}
               </>
             }
@@ -1511,8 +1899,12 @@ export default function MasterPanel() {
 
               {showSug && suggestions.length > 0 ? (
                 <div
-                  className="absolute left-0 right-0 mt-1 rounded-2xl border border-white/10 vero-glass overflow-hidden"
-                  style={{ zIndex: 40 }}
+                  className="absolute left-0 right-0 mt-1 rounded-2xl border border-white/12 vero-glass overflow-hidden"
+                  style={{
+                    zIndex: 40,
+                    background: "linear-gradient(180deg, rgba(0,0,0,0.58), rgba(0,0,0,0.38))",
+                    boxShadow: "0 16px 50px rgba(0,0,0,0.55)",
+                  }}
                 >
                   {suggestions.map((s, idx) => (
                     <button
@@ -1521,7 +1913,10 @@ export default function MasterPanel() {
                       onMouseDown={(e) => e.preventDefault()}
                       onClick={() => onPickSuggestion(s)}
                       className="w-full text-left px-3 py-2 text-sm hover:bg-white/5"
-                      style={{ background: idx === sugIdx ? "rgba(255,255,255,0.06)" : "transparent" }}
+                      style={{
+                        background: idx === sugIdx ? "rgba(255,255,255,0.08)" : "transparent",
+                        lineHeight: 1.25,
+                      }}
                     >
                       {s}
                     </button>
@@ -1532,20 +1927,26 @@ export default function MasterPanel() {
 
             <Select label="Status" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
               <option value="all">Todos</option>
-              {TASK_STATUS.map((s) => (
-                <option key={s} value={s}>
-                  {statusPretty(s)}
-                </option>
-              ))}
+              {TASK_STATUS.map((s) => {
+                const v = normalizeStatusToAllowed(s, TASK_STATUS);
+                return (
+                  <option key={s} value={v}>
+                    {statusPretty(v)}
+                  </option>
+                );
+              })}
             </Select>
 
             <Select label="Prioridade" value={prioFilter} onChange={(e) => setPrioFilter(e.target.value)}>
               <option value="all">Todas</option>
-              {PRIORITIES.map((p) => (
-                <option key={p} value={p}>
-                  {prioPretty(p)}
-                </option>
-              ))}
+              {PRIORITIES.map((p) => {
+                const v = normalizePriorityToAllowed(p, PRIORITIES);
+                return (
+                  <option key={p} value={v}>
+                    {prioPretty(v)}
+                  </option>
+                );
+              })}
             </Select>
 
             <Select label="Ordenar" value={sort} onChange={(e) => setSort(e.target.value)}>
@@ -1592,7 +1993,7 @@ export default function MasterPanel() {
 
           {/* CONTROLES DE SELEÇÃO */}
           <div
-            className="mt-4 rounded-2xl border border-white/10 vero-glass"
+            className="mt-4 rounded-2xl border border-white/12 vero-glass"
             style={{
               padding: 12,
               display: "flex",
@@ -1600,10 +2001,11 @@ export default function MasterPanel() {
               justifyContent: "space-between",
               gap: 10,
               flexWrap: "wrap",
+              background: "linear-gradient(180deg, rgba(0,0,0,0.48), rgba(0,0,0,0.30))",
             }}
           >
             <div className="flex items-center gap-2 flex-wrap">
-              <label className="flex items-center gap-2 text-xs text-white/70" style={{ cursor: "pointer" }}>
+              <label className="flex items-center gap-2 text-xs text-white/70" style={{ cursor: "pointer", lineHeight: 1.2 }}>
                 <input
                   type="checkbox"
                   checked={allVisibleSelected}
@@ -1613,26 +2015,22 @@ export default function MasterPanel() {
                   onChange={toggleAllVisible}
                 />
                 <span>
-                  Selecionar itens desta página (<b className="text-white/85">{visibleIds.length}</b>)
+                  Selecionar página (<b className="text-white/85">{visibleIds.length}</b>)
                 </span>
               </label>
 
-              {selectedCount ? (
-                <Pill tone="warn">☑ Selecionadas: {selectedCount}</Pill>
-              ) : (
-                <Pill tone="neutral">Marque caixas para ações em massa</Pill>
-              )}
+              {selectedCount ? <Pill tone="warn">☑ {selectedCount}</Pill> : <Pill tone="neutral">Seleção</Pill>}
             </div>
 
             <div className="flex items-center gap-2 flex-wrap">
               <Button tone="ghost" onClick={selectAllFiltered} disabled={filtered.length === 0 || bulkBusy}>
-                Selecionar tudo (filtro)
+                Tudo (filtro)
               </Button>
               <Button tone="ghost" onClick={clearSelection} disabled={selectedCount === 0 || bulkBusy}>
-                Limpar seleção
+                Limpar
               </Button>
               <Button tone="bad" onClick={requestBulkDelete} disabled={selectedCount === 0 || bulkBusy}>
-                Excluir selecionadas
+                Excluir
               </Button>
             </div>
           </div>
@@ -1640,7 +2038,7 @@ export default function MasterPanel() {
           {/* AÇÕES EM MASSA */}
           <div className="mt-4" id="bulk-anchor">
             <div
-              className="vero-glass border border-white/10 rounded-2xl"
+              className="vero-glass border border-white/12 rounded-2xl"
               style={{
                 padding: 12,
                 display: "flex",
@@ -1649,6 +2047,7 @@ export default function MasterPanel() {
                 gap: 10,
                 cursor: "pointer",
                 userSelect: "none",
+                background: "linear-gradient(180deg, rgba(0,0,0,0.48), rgba(0,0,0,0.30))",
               }}
               onClick={() => setBulkOpen((v) => !v)}
               title="Abrir/fechar ações em massa"
@@ -1656,33 +2055,43 @@ export default function MasterPanel() {
               <div className="flex items-center gap-2 flex-wrap">
                 <Pill tone="neutral">⚙️ Ações em massa</Pill>
                 <Pill tone={selectedCount ? "warn" : "neutral"}>Selecionadas: {selectedCount}</Pill>
-                <span className="text-xs text-white/50">
-                  {selectedCount ? "Aplique status/prioridade/responsável para todas" : "Selecione tarefas para habilitar"}
-                </span>
               </div>
 
-              <IconBtn style={{ opacity: 1 }}>{bulkOpen ? "▾ Recolher" : "▸ Abrir"}</IconBtn>
+              <IconBtn style={{ opacity: 1 }}>{bulkOpen ? "▾" : "▸"}</IconBtn>
             </div>
 
             {bulkOpen ? (
-              <div className="rounded-2xl border border-white/10 bg-black/20" style={{ padding: 12, marginTop: 8 }}>
+              <div
+                className="rounded-2xl border border-white/12"
+                style={{
+                  padding: 12,
+                  marginTop: 8,
+                  background: "rgba(0,0,0,0.30)",
+                }}
+              >
                 <div className="grid grid-cols-1 sm:grid-cols-4 gap-2">
                   <Select label="Status (massa)" value={bulkStatus} onChange={(e) => setBulkStatus(e.target.value)}>
                     <option value="">— manter —</option>
-                    {TASK_STATUS.map((s) => (
-                      <option key={s} value={s}>
-                        {statusPretty(s)}
-                      </option>
-                    ))}
+                    {TASK_STATUS.map((s) => {
+                      const v = normalizeStatusToAllowed(s, TASK_STATUS);
+                      return (
+                        <option key={s} value={v}>
+                          {statusPretty(v)}
+                        </option>
+                      );
+                    })}
                   </Select>
 
                   <Select label="Prioridade (massa)" value={bulkPrio} onChange={(e) => setBulkPrio(e.target.value)}>
                     <option value="">— manter —</option>
-                    {PRIORITIES.map((p) => (
-                      <option key={p} value={p}>
-                        {prioPretty(p)}
-                      </option>
-                    ))}
+                    {PRIORITIES.map((p) => {
+                      const v = normalizePriorityToAllowed(p, PRIORITIES);
+                      return (
+                        <option key={p} value={v}>
+                          {prioPretty(v)}
+                        </option>
+                      );
+                    })}
                   </Select>
 
                   <Select label="Resp. (massa)" value={bulkAssignee} onChange={(e) => setBulkAssignee(e.target.value)}>
@@ -1705,8 +2114,8 @@ export default function MasterPanel() {
                   </div>
                 </div>
 
-                <div className="text-[11px] text-white/55 mt-2">
-                  Passos: (1) marque as caixas → (2) escolha o que alterar → (3) clique Aplicar.
+                <div className="text-[11px] text-white/55 mt-2 leading-relaxed">
+                  Passos: selecione → escolha campos → aplicar.
                 </div>
               </div>
             ) : null}
@@ -1714,24 +2123,24 @@ export default function MasterPanel() {
 
           {/* paginação */}
           <div className="mt-4 flex items-center justify-between gap-2 flex-wrap">
-            <div className="text-xs text-white/60">
+            <div className="text-xs text-white/60 leading-relaxed">
               Mostrando <b className="text-white/80">{paged.length}</b> de <b className="text-white/80">{filtered.length}</b>
             </div>
 
             <div className="flex items-center gap-2 flex-wrap">
               <IconBtn onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1}>
-                ← Anterior
+                ←
               </IconBtn>
 
-              <div className="text-xs text-white/55">
-                Página <b className="text-white/80">{page}</b> / <b className="text-white/80">{pageCount}</b>
+              <div className="text-xs text-white/55 leading-relaxed">
+                <b className="text-white/80">{page}</b> / <b className="text-white/80">{pageCount}</b>
               </div>
 
               <IconBtn onClick={() => setPage((p) => Math.min(pageCount, p + 1))} disabled={page >= pageCount}>
-                Próxima →
+                →
               </IconBtn>
 
-              <span className="text-xs text-white/55 ml-3">Ir para:</span>
+              <span className="text-xs text-white/55 ml-2">Ir:</span>
               <input
                 value={String(page)}
                 onChange={(e) => {
@@ -1740,11 +2149,11 @@ export default function MasterPanel() {
                   setPage(Math.max(1, Math.min(pageCount, v)));
                 }}
                 style={{
-                  width: 70,
+                  width: 64,
                   height: 36,
                   borderRadius: 14,
-                  border: "1px solid rgba(255,255,255,0.12)",
-                  background: "rgba(0,0,0,0.25)",
+                  border: "1px solid rgba(255,255,255,0.14)",
+                  background: "rgba(0,0,0,0.30)",
                   color: "#e5e7eb",
                   padding: "0 10px",
                   outline: "none",
@@ -1762,9 +2171,18 @@ export default function MasterPanel() {
             ) : (
               <div className="grid gap-2">
                 {paged.length === 0 ? (
-                  <div className="vero-glass border border-white/10 rounded-2xl p-4">
-                    <div className="text-sm text-white/80">Nada encontrado.</div>
-                    <div className="text-xs text-white/55 mt-1">Ajuste filtros, página ou busque outro termo.</div>
+                  <div
+                    className="vero-glass border border-white/12 rounded-2xl p-4"
+                    style={{
+                      background: "linear-gradient(180deg, rgba(0,0,0,0.50), rgba(0,0,0,0.28))",
+                    }}
+                  >
+                    <div className="text-sm text-white/82" style={{ lineHeight: 1.25 }}>
+                      Nada encontrado.
+                    </div>
+                    <div className="text-xs text-white/58 mt-1 leading-relaxed">
+                      Ajuste filtros, página ou busque outro termo.
+                    </div>
                   </div>
                 ) : null}
 
@@ -1778,26 +2196,25 @@ export default function MasterPanel() {
                       return (
                         <div key={key} style={{ display: "grid", gap: 8 }}>
                           <div
-                            className="vero-glass border border-white/10 rounded-2xl"
+                            className="vero-glass border border-white/12 rounded-2xl"
                             style={{
                               padding: 12,
                               display: "flex",
                               alignItems: "center",
                               justifyContent: "space-between",
                               gap: 10,
+                              background: "linear-gradient(180deg, rgba(0,0,0,0.50), rgba(0,0,0,0.30))",
                             }}
                           >
                             <div className="flex items-center gap-2 flex-wrap">
                               <Pill tone={groupTone(key)}>{groupTitle(key)}</Pill>
-                              <Pill tone="neutral">Qtd: {items.length}</Pill>
-                              {empty ? <span className="text-xs text-white/45">Sem itens nessa página</span> : null}
+                              <Pill tone="neutral">{items.length} item(s)</Pill>
+                              {empty ? <Pill tone="neutral">vazio</Pill> : null}
                             </div>
 
-                            <div className="flex items-center gap-2">
-                              <IconBtn onClick={() => toggleGroup(key)} disabled={empty}>
-                                {collapsed ? "▸ Expandir" : "▾ Recolher"}
-                              </IconBtn>
-                            </div>
+                            <IconBtn onClick={() => toggleGroup(key)} disabled={empty}>
+                              {collapsed ? "▸" : "▾"}
+                            </IconBtn>
                           </div>
 
                           {!collapsed && !empty ? (
@@ -1824,7 +2241,7 @@ export default function MasterPanel() {
         </Card>
       </div>
 
-      {/* Modal Edit (mantive igual) */}
+      {/* Modal Edit */}
       {editOpen ? (
         <div
           onMouseDown={() => closeEdit()}
@@ -1832,7 +2249,7 @@ export default function MasterPanel() {
             position: "fixed",
             inset: 0,
             zIndex: 9999,
-            background: "rgba(0,0,0,0.62)",
+            background: "rgba(0,0,0,0.70)",
             display: "grid",
             placeItems: "center",
             padding: 16,
@@ -1840,13 +2257,20 @@ export default function MasterPanel() {
         >
           <div
             onMouseDown={(e) => e.stopPropagation()}
-            className="vero-glass border border-white/10 rounded-2xl w-full"
-            style={{ maxWidth: 920, padding: 14, maxHeight: "min(82vh, 900px)", overflow: "auto" }}
+            className="vero-glass border border-white/12 rounded-2xl w-full"
+            style={{
+              maxWidth: 920,
+              padding: 14,
+              maxHeight: "min(82vh, 900px)",
+              overflow: "auto",
+              background: "linear-gradient(180deg, rgba(0,0,0,0.58), rgba(0,0,0,0.34))",
+              boxShadow: "0 26px 80px rgba(0,0,0,0.65)",
+            }}
           >
             <div className="flex items-start justify-between gap-3">
               <div>
-                <div style={{ fontWeight: 950, fontSize: 14 }}>Editar tarefa</div>
-                <div style={{ fontSize: 12, opacity: 0.75, marginTop: 2 }}>
+                <div style={{ fontWeight: 950, fontSize: 14, lineHeight: 1.2 }}>Editar tarefa</div>
+                <div style={{ fontSize: 12, opacity: 0.75, marginTop: 4, lineHeight: 1.25 }}>
                   ID: <code style={{ opacity: 0.9 }}>{editTask?.id}</code>
                 </div>
               </div>
@@ -1854,8 +2278,8 @@ export default function MasterPanel() {
               <button
                 onClick={closeEdit}
                 style={{
-                  border: "1px solid rgba(255,255,255,0.12)",
-                  background: "rgba(255,255,255,0.05)",
+                  border: "1px solid rgba(255,255,255,0.14)",
+                  background: "rgba(255,255,255,0.06)",
                   color: "#e5e7eb",
                   borderRadius: 12,
                   height: 34,
@@ -1886,29 +2310,36 @@ export default function MasterPanel() {
                       minHeight: 170,
                       padding: 12,
                       borderRadius: 16,
-                      border: "1px solid rgba(255,255,255,0.12)",
-                      background: "rgba(0,0,0,0.28)",
-                      color: "rgba(255,255,255,0.90)",
+                      border: "1px solid rgba(255,255,255,0.14)",
+                      background: "rgba(0,0,0,0.34)",
+                      color: "rgba(255,255,255,0.92)",
                       outline: "none",
+                      lineHeight: 1.45,
                     }}
                   />
                 </label>
 
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                   <Select label="Prioridade" value={editPriority} onChange={(e) => setEditPriority(e.target.value)}>
-                    {PRIORITIES.map((p) => (
-                      <option key={p} value={p}>
-                        {prioPretty(p)}
-                      </option>
-                    ))}
+                    {PRIORITIES.map((p) => {
+                      const v = normalizePriorityToAllowed(p, PRIORITIES);
+                      return (
+                        <option key={p} value={v}>
+                          {prioPretty(v)}
+                        </option>
+                      );
+                    })}
                   </Select>
 
                   <Select label="Status" value={editStatus} onChange={(e) => setEditStatus(e.target.value)}>
-                    {TASK_STATUS.map((s) => (
-                      <option key={s} value={s}>
-                        {statusPretty(s)}
-                      </option>
-                    ))}
+                    {TASK_STATUS.map((s) => {
+                      const v = normalizeStatusToAllowed(s, TASK_STATUS);
+                      return (
+                        <option key={s} value={v}>
+                          {statusPretty(v)}
+                        </option>
+                      );
+                    })}
                   </Select>
 
                   <Select
@@ -1931,28 +2362,29 @@ export default function MasterPanel() {
                   <div className="grid gap-2">
                     <div className="flex items-center gap-2 flex-wrap">
                       <span
-                        className={`inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-full border ${
-                          PRIORITY_BADGE?.[normalizePriority(editPriority)] || "border-white/10 bg-white/5"
+                        className={`inline-flex items-center gap-1 text-[11px] px-2.5 py-1.5 rounded-full border ${
+                          PRIORITY_BADGE?.[normalizePriorityToAllowed(editPriority, PRIORITIES)] || "border-white/12 bg-white/6"
                         }`}
+                        style={{ lineHeight: 1.1 }}
                       >
                         ⚡ {prioPretty(editPriority)}
                       </span>
                       <Pill tone="neutral">📌 {statusPretty(editStatus)}</Pill>
                     </div>
-                    <div className="text-[11px] text-white/65">
-                      Criada: <b className="text-white/85">{fmtTS(editTask?.createdAt)}</b>
+                    <div className="text-[11px] text-white/68 leading-relaxed">
+                      Criada: <b className="text-white/86">{fmtTS(editTask?.createdAt)}</b>
                       <br />
-                      Atual.: <b className="text-white/85">{fmtTS(editTask?.updatedAt)}</b>
+                      Atual.: <b className="text-white/86">{fmtTS(editTask?.updatedAt)}</b>
                     </div>
                   </div>
                 </SmallBox>
 
-                <SmallBox title="Resposta do Office" tone={officeTone(getOfficeSignalLabel(editTask)) || "neutral"}>
-                  {getOfficeSignalLabel(editTask) ? (
+                <SmallBox title="Resposta do Office" tone={officeTone(normalizeOfficeState(editTask?.officeSignal)) || "neutral"}>
+                  {normalizeOfficeState(editTask?.officeSignal) ? (
                     <div className="grid gap-2">
                       <div className="flex items-center justify-between gap-2 flex-wrap">
-                        <Pill tone={officeTone(getOfficeSignalLabel(editTask))}>
-                          📩 {officeLabel(getOfficeSignalLabel(editTask))}
+                        <Pill tone={officeTone(normalizeOfficeState(editTask?.officeSignal))}>
+                          📩 {signalLabel(normalizeOfficeState(editTask?.officeSignal))}
                         </Pill>
                         {editTask?.officeSignaledAt ? (
                           <span className="text-[11px] text-white/65">{fmtTS(editTask.officeSignaledAt)}</span>
@@ -1960,15 +2392,15 @@ export default function MasterPanel() {
                       </div>
 
                       {getOfficeComment(editTask) ? (
-                        <div className="text-xs text-white/80 whitespace-pre-wrap leading-relaxed">
+                        <div className="text-xs text-white/82 whitespace-pre-wrap leading-relaxed">
                           {getOfficeComment(editTask)}
                         </div>
                       ) : (
-                        <div className="text-xs text-white/60">Sem comentário do escritório.</div>
+                        <div className="text-xs text-white/62 leading-relaxed">Sem comentário do escritório.</div>
                       )}
                     </div>
                   ) : (
-                    <div className="text-xs text-white/60">Ainda sem resposta do escritório.</div>
+                    <div className="text-xs text-white/62 leading-relaxed">Ainda sem resposta do escritório.</div>
                   )}
                 </SmallBox>
               </div>

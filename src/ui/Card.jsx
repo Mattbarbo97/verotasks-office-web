@@ -20,30 +20,33 @@ export default function Card({
   const pad = compact || padding === "sm" ? 12 : padding === "lg" ? 18 : 14;
   const radius = 18;
 
-  // Base “dark glass” com mais contraste (melhor leitura)
-  // - fundo mais opaco
-  // - borda um pouco mais clara
-  // - sombra mais profunda (separa da página)
-  // - um highlight no topo pra dar recorte
+  /**
+   * ✅ Ajuste principal:
+   * - fundo mais “sólido” (menos transparente)
+   * - borda mais presente
+   * - inner stroke (borda interna) + leve glow pra destacar
+   * - highlight mais controlado (pra não parecer “lavado”)
+   */
+
   const baseDefault = {
-    background: "rgba(12,14,20,0.86)",
-    border: "1px solid rgba(255,255,255,0.14)",
-    boxShadow: "0 18px 55px rgba(0,0,0,0.55)",
+    background: "rgba(10,12,18,0.90)", // ↑ mais sólido (antes 0.86)
+    border: "1px solid rgba(255,255,255,0.16)", // ↑ mais presente
+    boxShadow: "0 20px 60px rgba(0,0,0,0.62)", // ↑ separa do fundo
     backdropFilter: "blur(14px)",
   };
 
   const baseFlat = {
-    background: "rgba(10,12,18,0.78)",
-    border: "1px solid rgba(255,255,255,0.12)",
-    boxShadow: "none",
+    background: "rgba(10,12,18,0.86)", // ↑
+    border: "1px solid rgba(255,255,255,0.14)",
+    boxShadow: "0 10px 30px rgba(0,0,0,0.38)", // antes none: sem sombra some demais
     backdropFilter: "blur(12px)",
   };
 
   const baseSoft = {
     background:
-      "linear-gradient(180deg, rgba(18,20,30,0.92) 0%, rgba(10,12,18,0.82) 100%)",
-    border: "1px solid rgba(255,255,255,0.14)",
-    boxShadow: "0 22px 70px rgba(0,0,0,0.62)",
+      "linear-gradient(180deg, rgba(16,18,28,0.94) 0%, rgba(10,12,18,0.88) 100%)",
+    border: "1px solid rgba(255,255,255,0.16)",
+    boxShadow: "0 24px 78px rgba(0,0,0,0.68)",
     backdropFilter: "blur(14px)",
   };
 
@@ -62,7 +65,21 @@ export default function Card({
         ...style,
       }}
     >
-      {/* highlight superior (recorte/visibilidade) */}
+      {/* ✅ Inner stroke (borda interna) — dá recorte e tira aspecto “transparente demais” */}
+      <div
+        aria-hidden="true"
+        style={{
+          position: "absolute",
+          inset: 0,
+          borderRadius: radius,
+          pointerEvents: "none",
+          boxShadow:
+            "inset 0 0 0 1px rgba(255,255,255,0.08), inset 0 1px 0 rgba(255,255,255,0.06)",
+          opacity: 1,
+        }}
+      />
+
+      {/* ✅ Highlight superior (mais controlado) */}
       <div
         aria-hidden="true"
         style={{
@@ -71,10 +88,25 @@ export default function Card({
           borderRadius: radius,
           pointerEvents: "none",
           background:
-            "linear-gradient(180deg, rgba(255,255,255,0.08) 0%, rgba(255,255,255,0.02) 24%, rgba(255,255,255,0.00) 60%)",
+            "linear-gradient(180deg, rgba(255,255,255,0.07) 0%, rgba(255,255,255,0.02) 22%, rgba(255,255,255,0.00) 60%)",
           maskImage:
-            "linear-gradient(to bottom, rgba(0,0,0,1), rgba(0,0,0,1) 40%, rgba(0,0,0,0))",
-          opacity: variant === "flat" ? 0.55 : 0.7,
+            "linear-gradient(to bottom, rgba(0,0,0,1), rgba(0,0,0,1) 36%, rgba(0,0,0,0))",
+          opacity: variant === "flat" ? 0.45 : 0.60, // ↓ menos “lavado”
+        }}
+      />
+
+      {/* ✅ Glow sutil pra separar do fundo (bem Vero, sem exagero) */}
+      <div
+        aria-hidden="true"
+        style={{
+          position: "absolute",
+          inset: -1,
+          borderRadius: radius + 1,
+          pointerEvents: "none",
+          background:
+            "radial-gradient(800px 220px at 15% 0%, rgba(99,102,241,0.14), transparent 60%), radial-gradient(700px 200px at 85% 0%, rgba(14,165,233,0.10), transparent 60%)",
+          opacity: variant === "flat" ? 0.35 : 0.55,
+          filter: "blur(10px)",
         }}
       />
 
@@ -94,9 +126,9 @@ export default function Card({
                 style={{
                   fontWeight: 950,
                   fontSize: 14,
-                  letterSpacing: 0.2,
+                  letterSpacing: -0.2,
                   color: "rgba(255,255,255,0.94)",
-                  lineHeight: 1.15,
+                  lineHeight: 1.2,
                   marginBottom: subtitle ? 4 : 0,
                 }}
               >
@@ -109,7 +141,7 @@ export default function Card({
                 style={{
                   fontSize: 12,
                   color: "rgba(255,255,255,0.72)",
-                  lineHeight: 1.25,
+                  lineHeight: 1.3,
                 }}
               >
                 {subtitle}
@@ -133,7 +165,7 @@ export default function Card({
             marginTop: 12,
             marginBottom: 12,
             background:
-              "linear-gradient(90deg, rgba(255,255,255,0.00), rgba(255,255,255,0.14), rgba(255,255,255,0.00))",
+              "linear-gradient(90deg, rgba(255,255,255,0.00), rgba(255,255,255,0.16), rgba(255,255,255,0.00))",
             opacity: 0.9,
           }}
         />

@@ -25,14 +25,17 @@ function pillStyle(active) {
     height: 38,
     padding: "0 14px",
     borderRadius: 999,
-    border: "1px solid rgba(255,255,255,0.12)",
-    background: active ? "rgba(99,102,241,0.20)" : "rgba(255,255,255,0.06)",
-    color: active ? "#EAF0FF" : "rgba(255,255,255,0.78)",
+    border: active ? "1px solid rgba(129,140,248,0.32)" : "1px solid rgba(255,255,255,0.12)",
+    background: active ? "rgba(99,102,241,0.22)" : "rgba(255,255,255,0.06)",
+    color: active ? "#EAF0FF" : "rgba(255,255,255,0.82)",
     textDecoration: "none",
-    fontWeight: 700,
+    fontWeight: 900,
     fontSize: 13,
-    transition: "transform 120ms ease, background 120ms ease, border 120ms ease",
+    lineHeight: 1.1,
+    letterSpacing: -0.1,
+    transition: "transform 120ms ease, background 120ms ease, border 120ms ease, filter 120ms ease",
     userSelect: "none",
+    filter: active ? "saturate(1.08)" : "none",
   };
 }
 
@@ -46,6 +49,38 @@ function dot(ok) {
       ? "0 0 0 3px rgba(34,197,94,0.14)"
       : "0 0 0 3px rgba(245,158,11,0.14)",
   };
+}
+
+function LogoVero() {
+  return (
+    <div
+      className="shrink-0 rounded-2xl border border-white/10"
+      style={{
+        width: 44,
+        height: 44,
+        display: "grid",
+        placeItems: "center",
+        background: "rgba(255,255,255,0.05)",
+        boxShadow: "0 12px 36px rgba(0,0,0,0.40)",
+      }}
+      title="Vero"
+    >
+      <img
+        src="/vero.png"
+        alt="Vero"
+        style={{
+          width: 28,
+          height: 28,
+          objectFit: "contain",
+          filter: "drop-shadow(0 8px 20px rgba(0,0,0,0.55))",
+        }}
+        onError={() => {
+          // Se não carregar, você vai ver isso no console
+          console.error("[Shell] Logo /vero.png não carregou. Confirme public/vero.png e o nome exato do arquivo.");
+        }}
+      />
+    </div>
+  );
 }
 
 export default function Shell({
@@ -81,8 +116,8 @@ export default function Shell({
           position: "sticky",
           top: 0,
           zIndex: 20,
-          backdropFilter: "blur(10px)",
-          background: "rgba(6,8,20,0.60)",
+          backdropFilter: "blur(12px)",
+          background: "rgba(6,8,20,0.62)",
           borderBottom: "1px solid rgba(255,255,255,0.08)",
         }}
       >
@@ -98,38 +133,65 @@ export default function Shell({
             flexWrap: "wrap",
           }}
         >
-          {/* Left: title */}
-          <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 240 }}>
-            <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
-              <div style={{ fontSize: 18, fontWeight: 950, letterSpacing: 0.2 }}>{title}</div>
-              {subtitle ? (
-                <div style={{ fontSize: 13, opacity: 0.75, fontWeight: 700 }}>{subtitle}</div>
-              ) : null}
-            </div>
+          {/* Left: brand + title */}
+          <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 240, flex: 1 }}>
+            <LogoVero />
 
-            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-              <div style={{ fontSize: 12, opacity: 0.8 }}>
-                <span style={{ opacity: 0.8 }}>Logado como:</span>{" "}
-                <span style={{ fontWeight: 800, opacity: 0.95 }}>{userLabel}</span>
-                <span style={{ opacity: 0.7 }}> • ({role || "office"})</span>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
+                <div
+                  style={{
+                    fontSize: 18,
+                    fontWeight: 950,
+                    letterSpacing: -0.25,
+                    lineHeight: 1.1,
+                  }}
+                  className="truncate"
+                >
+                  {title}
+                </div>
+
+                {subtitle ? (
+                  <div
+                    style={{
+                      fontSize: 12,
+                      opacity: 0.72,
+                      fontWeight: 800,
+                      lineHeight: 1.1,
+                    }}
+                    className="truncate"
+                  >
+                    {subtitle}
+                  </div>
+                ) : null}
               </div>
 
-              <div
-                title={telegramLinked ? "Telegram vinculado" : "Telegram não vinculado"}
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 8,
-                  padding: "6px 10px",
-                  borderRadius: 999,
-                  border: "1px solid rgba(255,255,255,0.10)",
-                  background: "rgba(255,255,255,0.06)",
-                  fontSize: 12,
-                  fontWeight: 800,
-                }}
-              >
-                <span style={dot(telegramLinked)} />
-                Telegram {telegramLinked ? "OK" : "⚠️"}
+              {/* User + Telegram (mais “limpo” e com respiro) */}
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <div style={{ fontSize: 12, opacity: 0.82, lineHeight: 1.2 }}>
+                  <span style={{ opacity: 0.8 }}>Logado:</span>{" "}
+                  <span style={{ fontWeight: 900, opacity: 0.95 }}>{userLabel}</span>
+                  <span style={{ opacity: 0.7 }}> • ({role || "office"})</span>
+                </div>
+
+                <div
+                  title={telegramLinked ? "Telegram vinculado" : "Telegram não vinculado"}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 8,
+                    padding: "7px 10px",
+                    borderRadius: 999,
+                    border: "1px solid rgba(255,255,255,0.10)",
+                    background: "rgba(255,255,255,0.06)",
+                    fontSize: 12,
+                    fontWeight: 900,
+                    lineHeight: 1.1,
+                  }}
+                >
+                  <span style={dot(telegramLinked)} />
+                  Telegram {telegramLinked ? "OK" : "⚠️"}
+                </div>
               </div>
             </div>
           </div>
@@ -163,7 +225,7 @@ export default function Shell({
               onMouseDown={(e) => e.currentTarget && (e.currentTarget.style.transform = "scale(0.98)")}
               onMouseUp={(e) => e.currentTarget && (e.currentTarget.style.transform = "scale(1)")}
             >
-              🔗 Vincular Telegram {!telegramLinked ? "⚠️" : ""}
+              🔗 Telegram {!telegramLinked ? "⚠️" : ""}
             </Link>
 
             {showMasterNav ? (
